@@ -1,0 +1,1 @@
+"""Factory data MCP server."""
