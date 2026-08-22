@@ -43,7 +43,7 @@
         }
     },
     "forwardPorts": [],
-    "postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.pi && sudo chown -R vscode:vscode /workspace && source /workspace/.venv/bin/activate && uv pip install ruff 2>/dev/null || true",
+    "postCreateCommand": "source /workspace/.venv/bin/activate && echo 'Python + uv + pi coding agent ready!'",
     "remoteUser": "vscode",
     "features": {
         "ghcr.io/devcontainers/features/git:1": {},
@@ -54,5 +54,5 @@
         }
     },
     "overrideCommand": false,
-    "initializeCommand": "echo 'Python + uv + pi coding agent ready!'"
+    "initializeCommand": "source /workspace/.venv/bin/activate && uv --version && echo 'Python + uv + pi coding agent ready!'"
 }
