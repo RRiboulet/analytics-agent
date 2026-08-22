@@ -1,0 +1,58 @@
+{
+    "name": "PI-Agent-Python-DevContainer",
+    "dockerComposeFile": "docker-compose.yml",
+    "service": "devcontainer",
+    "workspaceFolder": "/workspace",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "eamodio.gitlens",
+                "ms-azuretools.vscode-docker",
+                "redhat.vscode-yaml",
+                "tamasfe.even-better-toml",
+                "ms-python.python",
+                "ms-python.debugpy",
+                "charliermarsh.ruff",
+                "esbenp.prettier-vscode",
+                "streetsidesoftware.code-spell-checker"
+            ],
+            "settings": {
+                "terminal.integrated.defaultProfile.linux": "bash",
+                "editor.formatOnSave": true,
+                "editor.defaultFormatter": "charliermarsh.ruff",
+                "[python]": {
+                    "editor.defaultFormatter": "charliermarsh.ruff",
+                    "editor.codeActionsOnSave": {
+                        "source.organizeImports": "explicit"
+                    }
+                },
+                "files.exclude": {
+                    "**/.git": true,
+                    "**/node_modules": true,
+                    "**/__pycache__": true,
+                    "**/*.pyc": true
+                },
+                "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+                "python.terminal.activateEnvironment": true,
+                "python.linting.enabled": true,
+                "python.linting.pylintEnabled": false,
+                "python.linting.ruffEnabled": true,
+                "python.testing.pytestEnabled": false,
+                "python.testing.unittestEnabled": false
+            }
+        }
+    },
+    "forwardPorts": [],
+    "postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.pi && sudo chown -R vscode:vscode /workspace && source /workspace/.venv/bin/activate && uv pip install ruff 2>/dev/null || true",
+    "remoteUser": "vscode",
+    "features": {
+        "ghcr.io/devcontainers/features/git:1": {},
+        "ghcr.io/devcontainers/features/github-cli:1": {},
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "installZsh": true,
+            "configureZshAsDefaultShell": true
+        }
+    },
+    "overrideCommand": false,
+    "initializeCommand": "echo 'Python + uv + pi coding agent ready!'"
+}

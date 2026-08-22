@@ -1,0 +1,15 @@
+services:
+  devcontainer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ..:/workspace:cached
+      - pi-config:/home/vscode/.pi
+    command: sleep infinity
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    user: vscode
+
+volumes:
+  pi-config:
