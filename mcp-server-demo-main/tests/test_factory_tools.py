@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 import pytest
@@ -46,6 +47,10 @@ async def test_query_tool_returns_structured_data() -> None:
     assert result.structuredContent["valid"] is True
     assert result.structuredContent["entries"] == [{"machine_code": "ASM-01"}]
     assert client.queries[0].endswith("LIMIT 100")
+
+    # llama.cpp clients read structured data from `content`; assert it carries JSON.
+    parsed_content = json.loads(result.content[0].text)
+    assert parsed_content["entries"] == [{"machine_code": "ASM-01"}]
 
 
 @pytest.mark.asyncio

@@ -5,16 +5,19 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
 
 from app.data_sources.postgres import PostgresClient
+from app.middleware import copy_structured_content_to_content
 
 _DATA_SOURCE = "sample-factory-postgres"
 
 
 def _result(valid: bool, message: str, entries: list[dict[str, Any]]) -> CallToolResult:
     response = {"valid": valid, "message": message, "entries": entries}
-    return CallToolResult(
-        content=[TextContent(type="text", text=message)],
-        structuredContent=response,
-        _meta={"data_source": _DATA_SOURCE},
+    return copy_structured_content_to_content(
+        CallToolResult(
+            content=[TextContent(type="text", text=message)],
+            structuredContent=response,
+            _meta={"data_source": _DATA_SOURCE},
+        )
     )
 
 
