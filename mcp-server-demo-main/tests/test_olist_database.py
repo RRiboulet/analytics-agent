@@ -7,9 +7,11 @@ Two kinds of tests:
   themselves when one is not available.
 """
 
+import asyncio
 import re
 from pathlib import Path
 
+import asyncpg.exceptions
 import pytest
 
 from app.config import get_settings
@@ -87,12 +89,23 @@ def test_readonly_role_grants_select_only() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _connect(client: PostgresClient) -> bool:
-    try:
-        await client.connect()
-        return True
-    except Exception:
-        return False
+async def _connect(client: PostgresClient, retries: int = 10, delay: float = 1.0) -> bool:
+    """Connect with retries.
+
+    On a fresh init the Postgres entrypoint runs on a temporary server and then
+    restarts the real one; pg_isready can report healthy in that window while
+    real connects still fail. Retry before giving up so the integration tests
+    do not silently skip on a fresh clone.
+    """
+    for attempt in range(retries):
+        try:
+            await client.connect()
+            return True
+        except Exception:
+            if attempt == retries - 1:
+                return False
+            await asyncio.sleep(delay)
+    return False
 
 
 @pytest.mark.asyncio
@@ -144,7 +157,7 @@ async def test_readonly_cannot_write() -> None:
     try:
         if not await _connect(c):
             pytest.skip("no live database")
-        with pytest.raises(Exception):
+        with pytest.raises(asyncpg.exceptions.InsufficientPrivilegeError):
             await c.fetch_many("DELETE FROM products")
     finally:
         await c.close()

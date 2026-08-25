@@ -670,7 +670,7 @@ Verified:
   sensible revenue-by-category results.
 * MCP server starts, `/live` and `/ready` return healthy, list/describe/query work against Olist
   data, and the read-only SQL safety layer still rejects writes.
-* `uv run pytest` → 23 passed (16 original + 7 new); `ruff check tests/` clean.
+* `uv run pytest` → 25 passed (16 original + 9 new); `ruff check tests/` clean.
 
 Not changed (out of M1 scope):
 

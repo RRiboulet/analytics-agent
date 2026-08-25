@@ -57,3 +57,8 @@ COPY geolocation (geolocation_zip_code_prefix, geolocation_lat, geolocation_lng,
                   geolocation_city, geolocation_state)
 FROM '/olist-data/olist_geolocation_dataset.csv'
 WITH (FORMAT csv, HEADER true);
+
+-- Populate planner statistics so analytical queries on a freshly initialized
+-- database are not planned with zero stats (autoanalyze only kicks in later).
+\echo 'Analyzing...'
+ANALYZE;
