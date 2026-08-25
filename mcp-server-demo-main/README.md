@@ -45,7 +45,7 @@ Install Docker, Docker Compose, Python 3.13+, and `uv`.
 	uv run factory-mcp-server
 	```
 
-The server connects as `factory_readonly`. The database admin credentials are used only by PostgreSQL initialization and are not used by the MCP application.
+The server connects as `olist_readonly`. The database admin credentials are used only by PostgreSQL initialization and are not used by the MCP application.
 
 ## Connect a llama.cpp client
 

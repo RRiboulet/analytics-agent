@@ -684,8 +684,10 @@ Tool rename (user-requested, M2-aligned):
 * MCP tools renamed to generic discovery names: `list_factory_tables` → `list_tables`,
   `describe_factory_table` → `describe_table`, `query_factory_data` → `query`; the
   data-source label is now `olist-postgres` and the MCP server name is `mcp-analytics-demo`.
-  Module files renamed to match. The DB/role names (`factory_readonly`, db `factory`)
-  are unchanged (connection config, not tool interface).
+  Module files renamed to match. The database and roles were also renamed to match
+  the dataset: db `factory` → `olist`, roles `factory_admin`/`factory_readonly` →
+  `olist_admin`/`olist_readonly`, volume `factory-postgres` → `olist-postgres`.
+  `DATABASE_URL` and `.env`/`.env.example` updated accordingly.
 * `query` surfaces real SQL execution errors (missing column/table) instead of
   masking them as an unavailable database, while genuine infrastructure failures
   still return the generic message. An agent can now self-correct on SQL errors.
