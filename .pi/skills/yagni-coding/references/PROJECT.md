@@ -2,6 +2,8 @@
 
 Read this before implementing. It turns the four general principles into concrete rules for this codebase, so a change that merely *works* is still held to the surgical/YAGNI bar.
 
+The project code lives in `mcp-server-demo-main/` (repo docs `AGENTS.md`/`PLAN.md` sit at the repo root). Run `uv`/pytest/ruff from that directory.
+
 ## Safety invariants — never bypass
 
 - All user/agent SQL must pass `app/sql_safety.py:validate_and_bound_query()` (single read-only statement, auto `LIMIT`). Do not add a raw SQL path for agent-controlled input.

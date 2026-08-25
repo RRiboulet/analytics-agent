@@ -2,6 +2,8 @@
 
 Load this reference when a review needs the surrounding architecture, not just the diff. Keeps reviews grounded in how this codebase is actually built.
 
+Project code lives in `mcp-server-demo-main/` (repo docs at `/workspace`); review that directory, not `/workspace` itself.
+
 ## What this project is
 
 A local FastMCP server exposing PostgreSQL-backed tools. It demos a **reusable MCP server pattern**: server factory owns lifecycle and transport, `app/tools/registry.py` is the explicit tool registry, and `app/data_sources/postgres.py` owns all database access.

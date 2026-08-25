@@ -2,6 +2,8 @@
 
 Evaluate each changed unit against the rows below. Not every row applies to every change — mark N/A when not relevant. The point is uniformity, not exhaustive re-reading of files that did not move.
 
+Keep this list project-agnostic. Repository-specific conventions (naming, seed/row counts, schema details, tool names) belong in `references/PROJECT.md`.
+
 ## Correctness & edge cases
 
 - [ ] Does the logic handle the obvious happy path exactly once (no double side effects)?
@@ -54,7 +56,7 @@ Evaluate each changed unit against the rows below. Not every row applies to ever
 
 ## Docs & naming
 
-- [ ] Naming matches the surrounding codebase and MCP conventions (`*_factory_*` tool names).
+- [ ] Naming matches the surrounding codebase and MCP tool-name conventions.
 - [ ] Behavior-affecting choices are documented in the README or a dedicated doc, not only in the code comment.
 - [ ] Deterministic sampling/seed data stays deterministic (no random values that erode reproducibility).
 

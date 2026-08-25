@@ -1,41 +1,210 @@
 # Project Instructions
 
-## Development Environment (DevContainer)
+## Development Environment
 
-This project is developed inside a **VSCode DevContainer** that is purpose-built for the **pi coding agent**. Do **not** work in the local host editor for development.
+This project is developed inside a **VSCode DevContainer** purpose-built for the **pi coding agent**.
+
+Do **not** perform development work on the local host. All development commands, tests, dependency management, database operations, and application execution must happen inside the DevContainer.
 
 To open the environment:
 
 1. Open the project folder in VSCode.
-2. Select the **Dev Containers: Reopen in Container...** command.
-3. The container image is defined in `.devcontainer/Dockerfile` and orchestrated by `.devcontainer/devcontainer.json` (+ `docker-compose.yml`).
+2. Select **Dev Containers: Reopen in Container...**.
+3. The container image is defined in `.devcontainer/Dockerfile`.
+4. Container orchestration is defined by `.devcontainer/devcontainer.json` and the project's Docker Compose configuration.
 
-The container provides, out of the box:
+The container provides:
 
-- **Python 3.13** + [`uv`](https://docs.astral.sh/uv/) for dependency management.
-- **Node.js (LTS)** via NodeSource.
-- The **pi coding agent** (`@earendil-works/pi-coding-agent`) installed globally inside the container.
-- **Docker-in-Docker** (`docker.io`) plus `docker-compose` for the MCP demo services.
-- `git`, `curl`, and the ruff/pytest tooling already wired up.
+* Python 3.13
+* `uv` for Python dependency management
+* Node.js LTS
+* the `pi` coding agent
+* Docker-in-Docker
+* Docker Compose
+* git
+* ruff
+* pytest
 
-On container startup (`postCreateCommand`) the project venv is synced, `.env` is created from `.env.example`, and the Postgres service is started via `docker compose -f docker-compose.yml up -d postgres`.
+On container startup, the project environment is prepared and the PostgreSQL service is started.
+
+## Working Directory
+
+Coordination and planning docs (`AGENTS.md`, `PLAN.md`) live at the repo root `/workspace`.
+
+The project code lives in `mcp-server-demo-main/`. That name is a generic folder name, not a structure choice — it is the **permanent project home**, not a temporary download.
+
+Run `uv`, `uvx`, pytest, ruff, and Docker Compose commands from `mcp-server-demo-main/`. Relative paths such as `app/`, `db/`, and `tests/` in this file and in `PLAN.md` are relative to that directory.
+
+## Project Context
+
+Before making architectural or substantial implementation changes:
+
+1. Read `PLAN.md`.
+2. Inspect the existing repository and relevant implementation.
+3. Understand what already works.
+4. Prefer extending existing functionality over rewriting it.
+5. Identify the smallest coherent change that satisfies the current milestone.
+
+`PLAN.md` is the source of truth for the current project direction, milestones, architectural decisions, and project status.
+
+If implementation reveals that a decision in `PLAN.md` is incorrect, unsafe, unnecessarily complex, or incompatible with the existing system, do not silently work around it. Explain the issue and propose an update before making a consequential architectural change.
+
+Do not implement future milestones unless explicitly requested.
+
+## Development Workflow
+
+Use the project's skills according to the nature of the task:
+
+* **`architecture-planning`** — use before substantial changes affecting multiple components, system boundaries, databases, integrations, or agent orchestration. Establish the current state, boundaries, implementation steps, and verification strategy before coding.
+* **`yagni-coding`** — use during implementation. Prefer the smallest correct change, avoid speculative abstractions, preserve existing behavior, and keep the diff focused.
+* **`verification`** — use after implementation to establish concrete evidence that the requested behavior works. Match verification depth to the change and verify integration boundaries when relevant.
+* **`code-review`** — use when reviewing uncommitted/staged changes, refactors, branches, or other substantial diffs. Apply skeptical distance even when reviewing changes produced in the same session.
+
+For a substantial change, the preferred workflow is:
+
+```text
+architecture-planning
+        ↓
+yagni-coding
+        ↓
+verification
+        ↓
+code-review
+```
+
+Do not invoke every skill mechanically for trivial changes. Use the skills when their scope applies.
+
+## Development Philosophy
+
+The project is being developed incrementally.
+
+Do not attempt to implement the entire V2 architecture in one step.
+
+For substantial tasks:
+
+1. Inspect.
+2. Explain your understanding.
+3. Propose an implementation approach.
+4. Implement the defined scope.
+5. Run relevant tests.
+6. Run formatting and linting.
+7. Report what changed and any remaining issues.
+
+When requirements are ambiguous, identify the ambiguity and propose options rather than making a large speculative change.
+
+Ask the user before proceeding when ambiguity affects:
+
+* architecture
+* security
+* data integrity
+* public interfaces
+* significant scope
+* irreversible decisions
+
+For ordinary implementation details with a reasonable conventional solution, make the simplest reasonable choice, state the assumption briefly, and proceed.
+
+## Existing Architecture
+
+The current project contains:
+
+* a Python MCP server
+* PostgreSQL running through Docker Compose
+* MCP tools for database interaction
+* a SQL safety layer enforcing read-only access
+* tests covering the existing MCP functionality
+* database initialization scripts under `db/init/`
+
+The existing functionality is valuable and should be preserved unless there is a clear reason to change it.
+
+## Database Safety
+
+The database is accessed through the MCP server.
+
+The existing SQL safety boundary is a critical security property.
+
+The analytics agent must never gain unrestricted database access.
+
+Only read-only SQL is allowed for the analytics workflow.
+
+Do not weaken, bypass, or remove the existing SQL validation boundary.
+
+Any changes to SQL execution or safety must include appropriate tests.
+
+## MCP
+
+MCP is the capability boundary between the agent and PostgreSQL.
+
+Existing MCP capabilities include:
+
+* `list_tables`
+* `describe_table`
+* `query`
+
+Future MCP capabilities should be added only when they provide a clear benefit to the analytics workflow.
+
+MCP tools should remain focused on database capabilities rather than embedding agent-specific business logic.
 
 ## Python Environment
 
-- Use `uv` for dependency management: `uv add <package>`, `uv sync`, `uv run <script>`.
-- Virtual environment is at `.venv/`.
-- Python version: 3.13.
-- The venv is pre-created and populated during container creation, so a manual `uv sync` is normally not required.
+Use `uv` for dependency management:
 
-## Code Style
+```bash
+uv add <package>
+uv sync
+uv run <command>
+```
 
-- Format with `ruff`: `ruff format .`
-- Lint with `ruff`: `ruff check .`
-- Auto-format on save is enabled in the container (default formatter is `charliermarsh.ruff`, and Python files also trigger `source.organizeImports`).
+Python version: 3.13.
 
-## General
+The virtual environment is located at `.venv/`.
 
-- Keep responses concise and focused.
-- Use git for version control.
-- Run tests after making changes.
-- All of the above commands run **inside the DevContainer** (i.e. via the pi agent's terminal), not on the host.
+## Code Quality
+
+Format:
+
+```bash
+ruff format .
+```
+
+Lint:
+
+```bash
+ruff check .
+```
+
+Run tests with:
+
+```bash
+uv run pytest
+```
+
+Run relevant tests during development and the full test suite before considering a milestone complete.
+
+## Git
+
+Use git for version control.
+
+Prefer small, focused commits when commits are requested.
+
+Do not modify or remove unrelated code merely to satisfy formatting or architectural preferences.
+
+## Documentation
+
+Keep `PLAN.md` up to date when a milestone, architectural decision, or significant implementation detail changes.
+
+Do not turn `PLAN.md` into a detailed implementation log.
+
+Keep architectural decisions concise and explain the reason behind important decisions.
+
+## Communication
+
+Keep responses concise and focused.
+
+For implementation tasks, report:
+
+* what was changed
+* why it was changed
+* tests/checks performed
+* any remaining concerns
+
+When beginning a new milestone, first verify the current repository state against `PLAN.md`.
