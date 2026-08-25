@@ -1,1 +1,1 @@
-"""Factory data MCP server."""
+"""Analytics MCP server."""

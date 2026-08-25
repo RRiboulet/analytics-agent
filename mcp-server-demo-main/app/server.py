@@ -19,7 +19,7 @@ def create_mcp_server(client: PostgresClient) -> FastMCP:
     # so the Postgres pool must NOT be opened/closed there. It is instead
     # owned by the outer ASGI app lifespan in create_asgi_app().
     mcp = FastMCP(
-        "factory-mcp-demo",
+        "mcp-analytics-demo",
         json_response=True,
         host=settings.mcp_host,
         port=settings.mcp_port,
@@ -71,4 +71,3 @@ def create_asgi_app() -> Starlette:
 
     app.router.lifespan_context = combined_lifespan
     return app
-

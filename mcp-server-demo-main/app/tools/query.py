@@ -9,7 +9,7 @@ from app.data_sources.postgres import PostgresClient
 from app.middleware import copy_structured_content_to_content
 from app.sql_safety import UnsafeQueryError, validate_and_bound_query
 
-_DATA_SOURCE = "sample-factory-postgres"
+_DATA_SOURCE = "olist-postgres"
 
 
 def _result(valid: bool, message: str, entries: list[dict[str, Any]]) -> CallToolResult:
@@ -25,20 +25,20 @@ def _result(valid: bool, message: str, entries: list[dict[str, Any]]) -> CallToo
 
 def register(mcp: FastMCP, client: PostgresClient) -> None:
     @mcp.tool(
-        name="query_factory_data",
+        name="query",
         description=(
-            "Run one read-only SELECT query against the sample factory database. "
+            "Run one read-only SELECT query against the PostgreSQL database. "
             "Results are capped by the server; query only the documented public tables."
         ),
         annotations=ToolAnnotations(
-            title="Query factory data",
+            title="Query data",
             readOnlyHint=True,
             destructiveHint=False,
             idempotentHint=True,
             openWorldHint=False,
         ),
     )
-    async def query_factory_data(
+    async def query(
         sql: str = Field(description="One read-only SELECT query.", max_length=10_000),
     ) -> CallToolResult:
         try:
@@ -54,5 +54,5 @@ def register(mcp: FastMCP, client: PostgresClient) -> None:
             # rather than masking it as an infrastructure problem.
             return _result(False, f"Query failed: {error}", [])
         except Exception:
-            return _result(False, "The factory database is temporarily unavailable.", [])
+            return _result(False, "The database is temporarily unavailable.", [])
         return _result(True, f"Query returned {len(rows)} row(s).", rows)

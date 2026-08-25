@@ -5,7 +5,7 @@ import asyncpg.exceptions
 import pytest
 
 from app.data_sources.postgres import PostgresClient
-from app.tools.query_factory_data import register
+from app.tools.query import register
 from app.tools.registry import register_tools
 
 
@@ -46,7 +46,7 @@ async def test_query_tool_returns_structured_data() -> None:
     client = FakeClient()
     register(mcp, client)  # type: ignore[arg-type]
 
-    result = await mcp.tools["query_factory_data"]("SELECT machine_code FROM machines")
+    result = await mcp.tools["query"]("SELECT machine_code FROM machines")
 
     assert result.structuredContent["valid"] is True
     assert result.structuredContent["entries"] == [{"machine_code": "ASM-01"}]
@@ -63,7 +63,7 @@ async def test_query_tool_rejects_writes_without_database_access() -> None:
     client = FakeClient()
     register(mcp, client)  # type: ignore[arg-type]
 
-    result = await mcp.tools["query_factory_data"]("DELETE FROM machines")
+    result = await mcp.tools["query"]("DELETE FROM machines")
 
     assert result.structuredContent["valid"] is False
     assert client.queries == []
@@ -78,7 +78,7 @@ async def test_query_tool_surfaces_sql_execution_error() -> None:
     )
     register(mcp, client)  # type: ignore[arg-type]
 
-    result = await mcp.tools["query_factory_data"]("SELECT customer_name FROM customers")
+    result = await mcp.tools["query"]("SELECT customer_name FROM customers")
 
     assert result.structuredContent["valid"] is False
     assert "customer_name" in result.structuredContent["message"]
@@ -92,18 +92,18 @@ async def test_query_tool_masks_infrastructure_error_as_unavailable() -> None:
     client = FakeClient(query_error=ConnectionError("refused"))
     register(mcp, client)  # type: ignore[arg-type]
 
-    result = await mcp.tools["query_factory_data"]("SELECT * FROM machines")
+    result = await mcp.tools["query"]("SELECT * FROM machines")
 
     assert result.structuredContent["valid"] is False
-    assert result.structuredContent["message"] == "The factory database is temporarily unavailable."
+    assert result.structuredContent["message"] == "The database is temporarily unavailable."
 
 
-def test_registry_registers_factory_tools_with_shared_client() -> None:
+def test_registry_registers_tools_with_shared_client() -> None:
     mcp = FakeMCP()
     register_tools(mcp, FakeClient())  # type: ignore[arg-type]
 
     assert set(mcp.tools) == {
-        "list_factory_tables",
-        "describe_factory_table",
-        "query_factory_data",
+        "list_tables",
+        "describe_table",
+        "query",
     }

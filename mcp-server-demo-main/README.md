@@ -94,13 +94,13 @@ These steps assume PostgreSQL and the MCP server are already running (see [Run l
 
 	Open the URL Inspector prints (it includes an auth token). Confirm the transport is "Streamable HTTP" with the URL `http://localhost:8000/mcp`, then click **Connect**.
 
-5. In the Inspector **Tools** tab, click **List Tools** and confirm all three tools are present: `list_factory_tables`, `describe_factory_table`, `query_factory_data`.
+5. In the Inspector **Tools** tab, click **List Tools** and confirm all three tools are present: `list_tables`, `describe_table`, `query`.
 
-6. Call `list_factory_tables` with no arguments. Expect `customers`, `sellers`, `products`, `orders`, `order_items`, `order_payments`, `order_reviews`, `geolocation`, and `product_category_translation` in the result.
+6. Call `list_tables` with no arguments. Expect `customers`, `sellers`, `products`, `orders`, `order_items`, `order_payments`, `order_reviews`, `geolocation`, and `product_category_translation` in the result.
 
-7. Call `describe_factory_table` with `table_name` set to `orders`. Expect a list of columns including `order_id`, `customer_id`, `order_status`, and `order_purchase_timestamp`.
+7. Call `describe_table` with `table_name` set to `orders`. Expect a list of columns including `order_id`, `customer_id`, `order_status`, and `order_purchase_timestamp`.
 
-8. Call `query_factory_data` with:
+8. Call `query` with:
 
 	```sql
 	SELECT o.order_status, COUNT(*) AS order_count
@@ -111,7 +111,7 @@ These steps assume PostgreSQL and the MCP server are already running (see [Run l
 
 	Expect a row per order status and `valid: true` in the structured result. The server appends a default `LIMIT 100` when a query does not specify one.
 
-9. Confirm the safety checks by calling `query_factory_data` with each of the following and expecting `valid: false` with no rows returned:
+9. Confirm the safety checks by calling `query` with each of the following and expecting `valid: false` with no rows returned:
 
 	- `` (blank query)
 	- `DELETE FROM products`
@@ -134,4 +134,4 @@ docker compose down -v
 docker compose up -d postgres
 ```
 
-Never place real factory credentials or production data in `.env`, seed files, query examples, or logs.
+Never place real database credentials or production data in `.env`, seed files, query examples, or logs.

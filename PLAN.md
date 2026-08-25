@@ -672,12 +672,23 @@ Verified:
   data, and the read-only SQL safety layer still rejects writes.
 * `uv run pytest` → 25 passed (16 original + 9 new); `ruff check tests/` clean.
 
-Not changed (out of M1 scope):
+Subsequent hardening (review findings):
 
-* MCP tool names still `list_factory_tables` / `describe_factory_table` / `query_factory_data` (via
-  `data` source label `sample-factory-postgres`). Renaming is an M2 interface decision and was left
-  untouched to keep M1 surgical and to avoid breaking the registry/README contract.
-* `app/` code, SQL safety layer, and existing MCP tool implementation unchanged.
+* DB integration tests now retry the connection before skipping (Postgres temp-
+  server restart window on fresh init), assert `InsufficientPrivilegeError` for the
+  read-only write-denial test, and `02_load.sql` runs `ANALYZE` so fresh databases
+  have planner statistics immediately.
+
+Tool rename (user-requested, M2-aligned):
+
+* MCP tools renamed to generic discovery names: `list_factory_tables` → `list_tables`,
+  `describe_factory_table` → `describe_table`, `query_factory_data` → `query`; the
+  data-source label is now `olist-postgres` and the MCP server name is `mcp-analytics-demo`.
+  Module files renamed to match. The DB/role names (`factory_readonly`, db `factory`)
+  are unchanged (connection config, not tool interface).
+* `query` surfaces real SQL execution errors (missing column/table) instead of
+  masking them as an unavailable database, while genuine infrastructure failures
+  still return the generic message. An agent can now self-correct on SQL errors.
 
 # M2 — MCP Analytics Capabilities
 
