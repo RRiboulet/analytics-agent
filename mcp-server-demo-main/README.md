@@ -1,18 +1,18 @@
 # Factory Data MCP Demo
 
-A local FastMCP server for querying synthetic factory data in PostgreSQL, designed to be driven from a local LLM served by llama.cpp. It follows the reusable MCP server pattern: the server factory owns lifecycle and transport, `app/tools/registry.py` is the explicit tool registry, and `app/data_sources/postgres.py` owns database access.
+A local FastMCP server for querying realistic e-commerce data (the Olist Brazilian E-Commerce dataset) in PostgreSQL, designed to be driven from a local LLM served by llama.cpp. It follows the reusable MCP server pattern: the server factory owns lifecycle and transport, `app/tools/registry.py` is the explicit tool registry, and `app/data_sources/postgres.py` owns database access.
 
 ## What is included
 
 - Streamable HTTP MCP server at `http://localhost:8000/mcp`
-- PostgreSQL 16 with deterministic sample data
+- PostgreSQL 16 with the Olist e-commerce dataset loaded from `data/olist/`
 - Read-only database role and SQL safety validation
 - Tools for table discovery, table descriptions, and bounded `SELECT` queries
 - Liveness endpoint at `http://localhost:8000/live`
 - Database-backed readiness endpoint at `http://localhost:8000/ready`
 - Tool results return structured data in both `structuredContent` and `content` (for llama.cpp clients)
 
-This is a local demonstration. The data is synthetic. Authentication, Azure deployment, telemetry, agents, and write operations are intentionally outside this first version.
+This is a local demonstration. Authentication, Azure deployment, telemetry, agents, and write operations are intentionally outside this first version.
 
 ## Prerequisites
 
@@ -51,13 +51,12 @@ The server connects as `factory_readonly`. The database admin credentials are us
 
 Point an MCP client backed by llama.cpp at the streamable HTTP endpoint `http://localhost:8000/mcp`. Tool results already carry structured data as a JSON string in the `content` field, so a llama.cpp client can parse it directly.
 
-Useful questions to ask against the sample data:
+Useful questions to ask against the Olist data:
 
-- Which machines are currently in maintenance?
-- Show production orders that are in progress, including product and machine names.
-- Which machines had the most downtime this week?
-- What is the defect rate for each production order?
-- Show quality checks that failed and their notes.
+- Which product categories generate the most revenue?
+- Which states have the highest average order value?
+- How does delivery time relate to review scores?
+- Which product categories have the best reviews?
 
 The query tool is intended for read-only analysis. A client should use the discovery tools first when it needs to understand the schema.
 
@@ -97,26 +96,27 @@ These steps assume PostgreSQL and the MCP server are already running (see [Run l
 
 5. In the Inspector **Tools** tab, click **List Tools** and confirm all three tools are present: `list_factory_tables`, `describe_factory_table`, `query_factory_data`.
 
-6. Call `list_factory_tables` with no arguments. Expect `machines`, `products`, `production_orders`, `quality_checks`, and `downtime_events` in the result.
+6. Call `list_factory_tables` with no arguments. Expect `customers`, `sellers`, `products`, `orders`, `order_items`, `order_payments`, `order_reviews`, `geolocation`, and `product_category_translation` in the result.
 
-7. Call `describe_factory_table` with `table_name` set to `production_orders`. Expect a list of columns including `order_number`, `product_id`, `machine_id`, and `status`.
+7. Call `describe_factory_table` with `table_name` set to `orders`. Expect a list of columns including `order_id`, `customer_id`, `order_status`, and `order_purchase_timestamp`.
 
 8. Call `query_factory_data` with:
 
 	```sql
-	SELECT m.machine_code, m.machine_name, m.status
-	FROM machines AS m
-	ORDER BY m.machine_code
+	SELECT o.order_status, COUNT(*) AS order_count
+	FROM orders AS o
+	GROUP BY o.order_status
+	ORDER BY order_count DESC
 	```
 
-	Expect four rows and `valid: true` in the structured result. The server appends a default `LIMIT 100` when a query does not specify one.
+	Expect a row per order status and `valid: true` in the structured result. The server appends a default `LIMIT 100` when a query does not specify one.
 
 9. Confirm the safety checks by calling `query_factory_data` with each of the following and expecting `valid: false` with no rows returned:
 
 	- `` (blank query)
-	- `DELETE FROM machines`
+	- `DELETE FROM products`
 	- `SELECT 1; SELECT 2`
-	- `DROP TABLE machines`
+	- `DROP TABLE products`
 
 10. Repeat steps 6–8 from your llama.cpp MCP client to confirm the server behaves identically through a client other than Inspector.
 

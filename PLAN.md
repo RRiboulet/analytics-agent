@@ -622,10 +622,72 @@ Completed:
 * [x] SELECT-only SQL safety boundary
 * [x] MCP tests
 * [x] Docker-based database initialization
+* [x] Inspect existing repository
+* [x] Confirm V1 architecture
+* [x] Design Olist database migration
 
 Next:
 
-* [ ] Inspect existing repository
-* [ ] Confirm V1 architecture
-* [ ] Design Olist database migration
-* [ ] Implement M1 reproducible realistic database
+* [x] **M1 — Implement reproducible realistic (Olist) database**
+
+# 18. M1 Status & Decisions
+
+**Status: complete.**
+
+Implemented:
+
+* Olist source CSVs stored at `data/olist/` (9 files).
+* `db/init/01_schema.sql` — realistic relational schema: `customers`, `sellers`, `products`,
+  `product_category_translation`, `orders`, `order_items`, `order_payments`, `order_reviews`,
+  `geolocation`.
+* Proper PKs (incl. composite keys for `order_items`, `order_payments`, `order_reviews`), FKs,
+  data types, and CHECK constraints.
+* Justified indexes on FK-lookup and common analytics access paths.
+* `db/init/02_load.sql` — deterministic server-side `COPY` from the mounted CSVs.
+* `docker-compose.yml` mounts `./data/olist:/olist-data:ro` so init scripts can load the data.
+* `tests/test_olist_database.py` — static schema/CSV tests (no live DB) plus DB integration tests
+  that skip when Postgres is unreachable.
+
+Decisions made during M1:
+
+* **File role separation** (`data/` vs `db/init/` vs `app/`) as requested: `data/olist` holds source
+  CSVs; `db/init` holds schema + load SQL; load uses server-side `COPY`.
+* **geolocation has no natural key** (many coordinates share a zip prefix) — kept as a dimensional
+  lookup table indexed on zip prefix only.
+* **Missing translation entries handled explicitly**: two product categories present in
+  `olist_products_dataset.csv` are absent from the translation file; they are added as a documented
+  `INSERT` in `02_load.sql` rather than modifying the source data or dropping the FK.
+* **Timestamp/zip types**: zip codes stored as `TEXT` (preserve leading zeros); money as `NUMERIC(10,2)`;
+  timestamps as `TIMESTAMP` (dataset has no timezone carrier).
+
+Verified:
+
+* Fresh `docker compose down -v && up -d postgres` initializes all 9 tables with correct row counts
+  matching every source CSV (incl. handling of embedded newlines in `order_reviews`).
+* All foreign keys have zero orphan rows.
+* Read-only role denies writes; `SELECT` works.
+* Analytical join query across `order_items`/`products`/`product_category_translation` returns
+  sensible revenue-by-category results.
+* MCP server starts, `/live` and `/ready` return healthy, list/describe/query work against Olist
+  data, and the read-only SQL safety layer still rejects writes.
+* `uv run pytest` → 23 passed (16 original + 7 new); `ruff check tests/` clean.
+
+Not changed (out of M1 scope):
+
+* MCP tool names still `list_factory_tables` / `describe_factory_table` / `query_factory_data` (via
+  `data` source label `sample-factory-postgres`). Renaming is an M2 interface decision and was left
+  untouched to keep M1 surgical and to avoid breaking the registry/README contract.
+* `app/` code, SQL safety layer, and existing MCP tool implementation unchanged.
+
+# M2 — MCP Analytics Capabilities
+
+Status: pending (next).
+
+Goals:
+* preserve existing MCP tools and add only capabilities justified by the analytics workflow
+* schema discovery, metadata access, analytical query execution, useful database inspection capabilities
+* continued read-only enforcement, comprehensive tests
+
+Success criterion:
+The Olist database can be meaningfully explored through MCP without the agent needing direct
+PostgreSQL access.
