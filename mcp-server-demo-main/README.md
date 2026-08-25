@@ -42,7 +42,7 @@ Install Docker, Docker Compose, Python 3.13+, and `uv`.
 4. Start the MCP server in a second terminal:
 
 	```bash
-	uv run factory-mcp-server
+	uv run mcp-analytics-server
 	```
 
 The server connects as `olist_readonly`. The database admin credentials are used only by PostgreSQL initialization and are not used by the MCP application.
