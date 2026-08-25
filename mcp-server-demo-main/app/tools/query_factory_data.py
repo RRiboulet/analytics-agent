@@ -1,5 +1,6 @@
 from typing import Any
 
+import asyncpg.exceptions
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
 from pydantic import Field
@@ -46,6 +47,12 @@ def register(mcp: FastMCP, client: PostgresClient) -> None:
             return _result(False, str(error), [])
         try:
             rows = await client.query(bounded_query)
+        except asyncpg.exceptions.PostgresError as error:
+            # A valid read-only statement failed to execute (e.g. a missing
+            # column/table or a type error). The DB error is the signal the
+            # agent needs to regenerate/correct its query, so surface it
+            # rather than masking it as an infrastructure problem.
+            return _result(False, f"Query failed: {error}", [])
         except Exception:
             return _result(False, "The factory database is temporarily unavailable.", [])
         return _result(True, f"Query returned {len(rows)} row(s).", rows)

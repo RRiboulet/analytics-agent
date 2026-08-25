@@ -1,6 +1,7 @@
 import json
 from typing import Any
 
+import asyncpg.exceptions
 import pytest
 
 from app.data_sources.postgres import PostgresClient
@@ -21,9 +22,10 @@ class FakeMCP:
 
 
 class FakeClient(PostgresClient):
-    def __init__(self) -> None:
+    def __init__(self, query_error: Exception | None = None) -> None:
         super().__init__("postgresql://unused", 1, 100)
         self.queries: list[str] = []
+        self.query_error = query_error
 
     async def list_tables(self) -> list[str]:
         return ["machines"]
@@ -33,6 +35,8 @@ class FakeClient(PostgresClient):
 
     async def query(self, sql: str) -> list[dict[str, Any]]:
         self.queries.append(sql)
+        if self.query_error is not None:
+            raise self.query_error
         return [{"machine_code": "ASM-01"}]
 
 
@@ -63,6 +67,35 @@ async def test_query_tool_rejects_writes_without_database_access() -> None:
 
     assert result.structuredContent["valid"] is False
     assert client.queries == []
+
+
+@pytest.mark.asyncio
+async def test_query_tool_surfaces_sql_execution_error() -> None:
+    """A real SQL error is surfaced so an agent can self-correct."""
+    mcp = FakeMCP()
+    client = FakeClient(
+        query_error=asyncpg.exceptions.UndefinedColumnError('column "customer_name" does not exist')
+    )
+    register(mcp, client)  # type: ignore[arg-type]
+
+    result = await mcp.tools["query_factory_data"]("SELECT customer_name FROM customers")
+
+    assert result.structuredContent["valid"] is False
+    assert "customer_name" in result.structuredContent["message"]
+    assert "unavailable" not in result.structuredContent["message"]
+
+
+@pytest.mark.asyncio
+async def test_query_tool_masks_infrastructure_error_as_unavailable() -> None:
+    """A non-SQL failure (connection/pool) keeps the generic unavailable message."""
+    mcp = FakeMCP()
+    client = FakeClient(query_error=ConnectionError("refused"))
+    register(mcp, client)  # type: ignore[arg-type]
+
+    result = await mcp.tools["query_factory_data"]("SELECT * FROM machines")
+
+    assert result.structuredContent["valid"] is False
+    assert result.structuredContent["message"] == "The factory database is temporarily unavailable."
 
 
 def test_registry_registers_factory_tools_with_shared_client() -> None:
