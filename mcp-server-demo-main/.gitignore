@@ -4,4 +4,8 @@ __pycache__/
 .ruff_cache/
 .env
 *.py[cod]
-*.csv
+
+# Source data CSVs are intentionally committed so that `docker compose up`
+# works on a fresh clone (db/init loads from data/olist). Exceptions:
+!data/olist/
+!data/olist/*.csv
