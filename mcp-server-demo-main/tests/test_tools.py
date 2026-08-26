@@ -106,4 +106,8 @@ def test_registry_registers_tools_with_shared_client() -> None:
         "list_tables",
         "describe_table",
         "query",
+        "get_relationships",
+        "get_sample_rows",
+        "get_table_statistics",
+        "get_column_statistics",
     }

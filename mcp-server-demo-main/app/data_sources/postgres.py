@@ -60,3 +60,110 @@ class PostgresClient:
     async def fetch_many(self, sql: str, parameters: Sequence[Any] = ()) -> list[dict[str, Any]]:
         rows = await self._require_pool().fetch(sql, *parameters, timeout=self.query_timeout_seconds)
         return [dict(row) for row in rows[: self.max_rows]]
+
+    # ------------------------------------------------------------------
+    # Analytics discovery helpers (M2)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _quote_ident(identifier: str) -> str:
+        return '"' + identifier.replace('"', '""') + '"'
+
+    @staticmethod
+    def _quote_literal(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    async def _table_exists(self, table_name: str) -> bool:
+        query = """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = $1
+        """
+        return (
+            await self._require_pool().fetchval(
+                query, table_name, timeout=self.query_timeout_seconds
+            )
+            is not None
+        )
+
+    async def _column_info(self, table_name: str, column_name: str) -> dict[str, Any] | None:
+        query = """
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+        """
+        rows = await self._require_pool().fetch(
+            query, table_name, column_name, timeout=self.query_timeout_seconds
+        )
+        return dict(rows[0]) if rows else None
+
+    async def get_relationships(self) -> list[dict[str, Any]]:
+        """Return the foreign key graph of the public schema."""
+        query = """
+            SELECT
+                child.relname AS child_table,
+                child_att.attname AS child_column,
+                parent.relname AS parent_table,
+                parent_att.attname AS parent_column,
+                con.conname AS constraint_name
+            FROM pg_constraint con
+            JOIN pg_class child ON con.conrelid = child.oid
+            JOIN pg_class parent ON con.confrelid = parent.oid
+            JOIN pg_namespace ns ON child.relnamespace = ns.oid
+            CROSS JOIN LATERAL unnest(con.conkey, con.confkey)
+                AS cols(child_attnum, parent_attnum)
+            JOIN pg_attribute child_att
+                ON child_att.attrelid = con.conrelid
+                AND child_att.attnum = cols.child_attnum
+            JOIN pg_attribute parent_att
+                ON parent_att.attrelid = con.confrelid
+                AND parent_att.attnum = cols.parent_attnum
+            WHERE con.contype = 'f' AND ns.nspname = 'public'
+            ORDER BY child.relname, con.conname, cols.child_attnum
+        """
+        rows = await self._require_pool().fetch(query, timeout=self.query_timeout_seconds)
+        return [dict(row) for row in rows]
+
+    async def get_sample_rows(self, table_name: str, limit: int) -> list[dict[str, Any]] | None:
+        """Return up to `limit` arbitrary rows from a public table, or None if unknown."""
+        if not await self._table_exists(table_name):
+            return None
+        query = f"SELECT * FROM {self._quote_ident(table_name)} LIMIT {limit}"
+        rows = await self._require_pool().fetch(query, timeout=self.query_timeout_seconds)
+        return [dict(row) for row in rows]
+
+    async def get_table_statistics(self) -> list[dict[str, Any]]:
+        """Return the exact row count for every public table."""
+        tables = await self.list_tables()
+        if not tables:
+            return []
+        parts = [
+            f"SELECT {self._quote_literal(table)} AS table_name, count(*) AS row_count "
+            f"FROM {self._quote_ident(table)}"
+            for table in tables
+        ]
+        query = " UNION ALL ".join(parts)
+        rows = await self._require_pool().fetch(query, timeout=self.query_timeout_seconds)
+        return [dict(row) for row in rows]
+
+    async def get_column_statistics(
+        self, table_name: str, column_name: str
+    ) -> dict[str, Any] | None:
+        """Return distribution statistics for one column, or None if unknown."""
+        info = await self._column_info(table_name, column_name)
+        if info is None:
+            return None
+        column = self._quote_ident(column_name)
+        query = f"""
+            SELECT
+                count(*) AS total_rows,
+                count(DISTINCT {column}) FILTER (WHERE {column} IS NOT NULL) AS distinct_count,
+                count(*) - count({column}) AS null_count,
+                min({column}) AS min_value,
+                max({column}) AS max_value
+            FROM {self._quote_ident(table_name)}
+        """
+        row = await self._require_pool().fetchrow(query, timeout=self.query_timeout_seconds)
+        result = dict(row)
+        result["data_type"] = info["data_type"]
+        return result

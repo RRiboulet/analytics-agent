@@ -161,3 +161,90 @@ async def test_readonly_cannot_write() -> None:
             await c.fetch_many("DELETE FROM products")
     finally:
         await c.close()
+
+
+# ---------------------------------------------------------------------------
+# M2 analytics discovery methods
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_relationships_match_schema() -> None:
+    settings = get_settings()
+    c = PostgresClient(settings.database_url, 5.0, 100)
+    try:
+        if not await _connect(c):
+            pytest.skip("no live database")
+        relationships = await c.get_relationships()
+        expected = {
+            (
+                "products",
+                "product_category_name",
+                "product_category_translation",
+                "product_category_name",
+            ),
+            ("orders", "customer_id", "customers", "customer_id"),
+            ("order_items", "order_id", "orders", "order_id"),
+            ("order_items", "product_id", "products", "product_id"),
+            ("order_items", "seller_id", "sellers", "seller_id"),
+            ("order_payments", "order_id", "orders", "order_id"),
+            ("order_reviews", "order_id", "orders", "order_id"),
+        }
+        actual = {
+            (r["child_table"], r["child_column"], r["parent_table"], r["parent_column"])
+            for r in relationships
+        }
+        assert actual == expected
+    finally:
+        await c.close()
+
+
+@pytest.mark.asyncio
+async def test_sample_rows_are_bounded_and_well_formed() -> None:
+    settings = get_settings()
+    c = PostgresClient(settings.database_url, 5.0, 100)
+    try:
+        if not await _connect(c):
+            pytest.skip("no live database")
+        rows = await c.get_sample_rows("orders", 3)
+        assert rows is not None
+        assert len(rows) == 3
+        assert {"order_id", "order_status", "order_purchase_timestamp"} <= set(rows[0])
+        assert await c.get_sample_rows("does_not_exist", 3) is None
+    finally:
+        await c.close()
+
+
+@pytest.mark.asyncio
+async def test_table_statistics_are_exact() -> None:
+    settings = get_settings()
+    c = PostgresClient(settings.database_url, 30.0, 5_000_000)
+    try:
+        if not await _connect(c):
+            pytest.skip("no live database")
+        stats = {s["table_name"]: s["row_count"] for s in await c.get_table_statistics()}
+        assert len(stats) == 9
+        assert stats["orders"] == 99441
+        assert stats["geolocation"] == 1000163
+        assert stats["products"] == 32951
+    finally:
+        await c.close()
+
+
+@pytest.mark.asyncio
+async def test_column_statistics_are_sane() -> None:
+    settings = get_settings()
+    c = PostgresClient(settings.database_url, 30.0, 5_000_000)
+    try:
+        if not await _connect(c):
+            pytest.skip("no live database")
+        stats = await c.get_column_statistics("orders", "order_status")
+        assert stats is not None
+        assert stats["total_rows"] == 99441
+        assert stats["distinct_count"] == 8
+        assert stats["null_count"] == 0
+        assert stats["data_type"] == "text"
+        assert await c.get_column_statistics("orders", "does_not_exist") is None
+        assert await c.get_column_statistics("does_not_exist", "order_id") is None
+    finally:
+        await c.close()
