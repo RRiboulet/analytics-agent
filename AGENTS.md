@@ -53,26 +53,31 @@ Do not implement future milestones unless explicitly requested.
 
 ## Development Workflow
 
-Use the project's skills according to the nature of the task:
+The project uses the bundled agent-skill suite in `.pi/skills/`. Use skills according to the phase of the task:
 
-* **`architecture-planning`** — use before substantial changes affecting multiple components, system boundaries, databases, integrations, or agent orchestration. Establish the current state, boundaries, implementation steps, and verification strategy before coding.
-* **`yagni-coding`** — use during implementation. Prefer the smallest correct change, avoid speculative abstractions, preserve existing behavior, and keep the diff focused.
-* **`verification`** — use after implementation to establish concrete evidence that the requested behavior works. Match verification depth to the change and verify integration boundaries when relevant.
-* **`code-review`** — use when reviewing uncommitted/staged changes, refactors, branches, or other substantial diffs. Apply skeptical distance even when reviewing changes produced in the same session.
+* **`understand-and-plan`** — start of any substantial change: investigate, assess repository impact and risk, establish a baseline, and produce a safe plan.
+* **`clean-implementation`** — implement the smallest complete change that fits the project's architecture and conventions.
+* **`comprehensive-testing`** — design meaningful risk-based tests with coverage evidence for new/changed code.
+* **`automated-quality-checks`** — run the repository's configured checks declared in `.pi/config/quality.yaml`.
+* **`final-review-and-validation`** — compare the final diff with requirements, run the final gate, and report evidence and residual risks.
 
 For a substantial change, the preferred workflow is:
 
 ```text
-architecture-planning
+understand-and-plan
         ↓
-yagni-coding
+clean-implementation
         ↓
-verification
+comprehensive-testing
         ↓
-code-review
+automated-quality-checks
+        ↓
+final-review-and-validation
 ```
 
-Do not invoke every skill mechanically for trivial changes. Use the skills when their scope applies.
+The project quality configuration lives at `.pi/config/quality.yaml`; the skills read their commands from that file (working directory is `mcp-server-demo-main/`). Coverage is measured for new/changed executable code via pytest-cov, targeting the configured line/branch thresholds.
+
+The sequence is not strictly linear — later phases may return to planning, implementation, or testing when evidence reveals a gap. Do not invoke every skill mechanically for trivial changes. Use the skills when their scope applies.
 
 ## Development Philosophy
 
