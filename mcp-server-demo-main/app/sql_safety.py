@@ -2,7 +2,7 @@ import re
 
 import sqlparse
 from sqlparse.sql import Statement
-from sqlparse.tokens import Keyword, DML, Whitespace, Comment
+from sqlparse.tokens import DML, Comment, Keyword, Whitespace
 
 
 class UnsafeQueryError(ValueError):
@@ -29,7 +29,11 @@ def validate_and_bound_query(sql: str, max_rows: int) -> str:
     if first.ttype not in (DML, Keyword) or first.value.upper() not in {"SELECT", "WITH"}:
         raise UnsafeQueryError("Only SELECT queries are allowed.")
 
-    if re.search(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|CALL|COPY)\b", query, re.IGNORECASE):
+    if re.search(
+        r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|CREATE|GRANT|REVOKE|CALL|COPY)\b",
+        query,
+        re.IGNORECASE,
+    ):
         raise UnsafeQueryError("The query contains a disallowed SQL operation.")
 
     bounded = query.rstrip().rstrip(";").rstrip()

@@ -67,7 +67,9 @@ class PostgresClient:
             WHERE table_schema = 'public' AND table_name = $1
             ORDER BY ordinal_position
         """
-        rows = await self._require_pool().fetch(query, table_name, timeout=self.query_timeout_seconds)
+        rows = await self._require_pool().fetch(
+            query, table_name, timeout=self.query_timeout_seconds
+        )
         return [dict(row) for row in rows]
 
     async def query(self, sql: str) -> list[dict[str, Any]]:
@@ -79,7 +81,9 @@ class PostgresClient:
         return True
 
     async def fetch_many(self, sql: str, parameters: Sequence[Any] = ()) -> list[dict[str, Any]]:
-        rows = await self._require_pool().fetch(sql, *parameters, timeout=self.query_timeout_seconds)
+        rows = await self._require_pool().fetch(
+            sql, *parameters, timeout=self.query_timeout_seconds
+        )
         return [dict(row) for row in rows[: self.max_rows]]
 
     # ------------------------------------------------------------------
