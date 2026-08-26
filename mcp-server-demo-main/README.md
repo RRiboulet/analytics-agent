@@ -7,7 +7,9 @@ A local FastMCP server for querying realistic e-commerce data (the Olist Brazili
 - Streamable HTTP MCP server at `http://localhost:8000/mcp`
 - PostgreSQL 16 with the Olist e-commerce dataset loaded from `data/olist/`
 - Read-only database role and SQL safety validation
-- Tools for table discovery, table descriptions, and bounded `SELECT` queries
+- Tools for table discovery, table descriptions, bounded `SELECT` queries, and analytical
+  schema inspection (`get_relationships`, `get_sample_rows`, `get_table_statistics`,
+  `get_column_statistics`)
 - Liveness endpoint at `http://localhost:8000/live`
 - Database-backed readiness endpoint at `http://localhost:8000/ready`
 - Tool results return structured data in both `structuredContent` and `content` (for llama.cpp clients)
@@ -94,7 +96,9 @@ These steps assume PostgreSQL and the MCP server are already running (see [Run l
 
 	Open the URL Inspector prints (it includes an auth token). Confirm the transport is "Streamable HTTP" with the URL `http://localhost:8000/mcp`, then click **Connect**.
 
-5. In the Inspector **Tools** tab, click **List Tools** and confirm all three tools are present: `list_tables`, `describe_table`, `query`.
+5. In the Inspector **Tools** tab, click **List Tools** and confirm all seven tools are present:
+   `list_tables`, `describe_table`, `query`, `get_relationships`, `get_sample_rows`,
+   `get_table_statistics`, `get_column_statistics`.
 
 6. Call `list_tables` with no arguments. Expect `customers`, `sellers`, `products`, `orders`, `order_items`, `order_payments`, `order_reviews`, `geolocation`, and `product_category_translation` in the result.
 
@@ -110,6 +114,20 @@ These steps assume PostgreSQL and the MCP server are already running (see [Run l
 	```
 
 	Expect a row per order status and `valid: true` in the structured result. The server appends a default `LIMIT 100` when a query does not specify one.
+
+8b. Call `get_relationships` with no arguments. Expect child/parent table and column pairs,
+	including `order_items.order_id -> orders.order_id` and
+	`order_reviews.order_id -> orders.order_id`.
+
+8c. Call `get_sample_rows` with `table_name` set to `orders` and `limit` set to `3`. Expect
+	three rows of realistic order columns.
+
+8d. Call `get_table_statistics` with no arguments. Expect the nine public tables with exact
+	row counts (e.g. `orders` 99441, `geolocation` 1000163).
+
+8e. Call `get_column_statistics` with `table_name` set to `orders` and `column_name` set to
+	`order_status`. Expect `total_rows` 99441, `distinct_count` 8, `null_count` 0, and
+	`data_type` `text`.
 
 9. Confirm the safety checks by calling `query` with each of the following and expecting `valid: false` with no rows returned:
 

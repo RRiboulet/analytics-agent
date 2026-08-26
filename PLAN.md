@@ -426,26 +426,66 @@ A fresh environment can initialize the realistic database reproducibly.
 
 ## M2 — MCP Analytics Capabilities
 
-Status: pending
-
-Preserve the existing MCP tools and add only the capabilities needed for the analytics workflow.
-
-Goals:
-* schema discovery
-* metadata access
-* analytical query execution
-* useful database inspection capabilities
-* continued read-only enforcement
-* comprehensive tests
+Status: complete (see the detailed section below).
 
 Success criterion:
-The database can be meaningfully explored through MCP without the agent needing direct PostgreSQL access.
+The database can be meaningfully explored through MCP without the agent needing
+direct PostgreSQL access.
 
 ---
 
-## M3 — Metadata + pgvector
+## M2 — MCP Analytics Capabilities
 
-Status: pending
+Status: complete.
+
+Implemented (all read-only, following the existing tool/module conventions):
+
+* `get_relationships` — foreign-key graph (child table/column → parent table/column) via
+  `pg_constraint`, so the agent can discover how to join tables.
+* `get_sample_rows` — bounded, arbitrary sample rows from one table, to inspect real
+  values (statuses, ids, formats) before writing a query.
+* `get_table_statistics` — exact row count for every public table (single `UNION ALL`).
+* `get_column_statistics` — total rows, distinct non-null count, null count, min/max and
+  data type for one column.
+* New `PostgresClient` methods in `app/data_sources/postgres.py`; table/column names are
+  validated against `information_schema` then identifier-quoted (no injection path).
+* All four registered in `app/tools/registry.py` (tool count 3 → 7).
+* Unit tests in `tests/test_analytics_tools.py` (response contract, blank/unknown inputs,
+  infrastructure-error masking, read-only annotations, empty-database edge case).
+* Live-DB integration tests in `tests/test_olist_database.py` (FK set, bounded samples,
+  exact counts, column stats against real Olist data).
+
+Decisions made during M2:
+
+* The `limit` parameter of `get_sample_rows` is capped at 100 (matches `MAX_ROWS`).
+* `get_table_statistics` uses exact `COUNT(*)` rather than planner estimates: only 9 tables
+  and a single `UNION ALL`, and exactness matters for an analytics agent; the 1M-row
+  `geolocation` count is still fast (~100ms).
+* `get_column_statistics` reports distinct *non-null* values and a separate null count.
+* Table/column inputs are validated against `information_schema` then quoted, so unknown
+  names return a clear "not found" result instead of a SQL error.
+* Fixed a shared serializer gap discovered during M2 validation (`app/middleware.py`):
+  `structuredContent` rows containing `date`/`datetime`/`time` (e.g. timestamps from
+  `get_sample_rows`, or `min`/`max` of a timestamp column) could not be JSON-encoded and made
+  every such call fail. The serializer now emits ISO-8601 strings. This also fixes a latent
+  failure in the pre-existing `query` tool for any result containing a timestamp/date.
+
+Verified:
+
+* `uv run pytest` → 43 passed (42 after M2 + 1 empty-database edge case; 25 pre-M2).
+* New tool modules and new client methods reach 100% line/branch coverage.
+* `ruff check .` clean for all new/changed code (see note below).
+* Live DB: `get_relationships` returns the 7 expected FKs; `order_status` column stats are
+  sensible (8 distinct, 0 null); table counts match source CSVs.
+
+Note: `ruff format --check .` and `ruff check .` report pre-existing deviations in code
+not touched by M2 (`app/data_sources/postgres.py` `list_tables`/`fetch_many`/`describe_table`
+lines and `app/sql_safety.py`). These predate M2 and are left unresolved per AGENTS.md
+(no unrelated formatting churn).
+
+# M3 — Metadata + pgvector
+
+Status: pending (next).
 
 Create the database metadata model and semantic retrieval layer.
 
@@ -457,7 +497,8 @@ Goals:
 * retrieval tests
 
 Success criterion:
-A natural-language analytical question can retrieve the relevant tables, columns and relationships without sending the complete schema to the LLM.
+A natural-language analytical question can retrieve the relevant tables, columns and
+relationships without sending the complete schema to the LLM.
 
 ---
 
@@ -610,7 +651,7 @@ These should be resolved during implementation rather than prematurely.
 
 Current milestone:
 
-**M0 — Architecture Discovery**
+**M2 — MCP Analytics Capabilities**
 
 Completed:
 
@@ -629,6 +670,8 @@ Completed:
 Next:
 
 * [x] **M1 — Implement reproducible realistic (Olist) database**
+* [x] **M2 — MCP analytics capabilities** — `get_relationships`, `get_sample_rows`, `get_table_statistics`, `get_column_statistics`
+* [ ] **M3 — Metadata + pgvector**
 
 # 18. M1 Status & Decisions
 
@@ -691,16 +734,3 @@ Tool rename (user-requested, M2-aligned):
 * `query` surfaces real SQL execution errors (missing column/table) instead of
   masking them as an unavailable database, while genuine infrastructure failures
   still return the generic message. An agent can now self-correct on SQL errors.
-
-# M2 — MCP Analytics Capabilities
-
-Status: pending (next).
-
-Goals:
-* preserve existing MCP tools and add only capabilities justified by the analytics workflow
-* schema discovery, metadata access, analytical query execution, useful database inspection capabilities
-* continued read-only enforcement, comprehensive tests
-
-Success criterion:
-The Olist database can be meaningfully explored through MCP without the agent needing direct
-PostgreSQL access.
