@@ -41,6 +41,26 @@ class Settings(BaseSettings):
         default=5, validation_alias="METADATA_SEARCH_TOP_K", ge=1, le=50
     )
 
+    # ------------------------------------------------------------------
+    # Analytics agent (M4)
+    # ------------------------------------------------------------------
+
+    # Streamable HTTP endpoint of the MCP server the agent consumes. The
+    # agent is a standalone client and never reaches PostgreSQL directly.
+    mcp_url: str = Field(default="http://localhost:8000/mcp", validation_alias="MCP_URL")
+    # OpenAI-compatible chat-completions endpoint of the local LLM. The
+    # default points at the host (devcontainer peers through
+    # host.docker.internal); the model server must listen on a
+    # container-reachable interface.
+    llm_base_url: str = Field(
+        default="http://host.docker.internal:11434/v1", validation_alias="LLM_BASE_URL"
+    )
+    llm_model: str = Field(default="gemma-4-E4B", validation_alias="LLM_MODEL")
+    llm_timeout_seconds: float = Field(default=120.0, validation_alias="LLM_TIMEOUT_SECONDS", gt=0)
+    # Maximum regeneration attempts before the agent fails out (no infinite
+    # loops when SQL stays invalid or errors).
+    agent_max_attempts: int = Field(default=3, validation_alias="AGENT_MAX_ATTEMPTS", ge=1, le=10)
+
 
 @lru_cache
 def get_settings() -> Settings:

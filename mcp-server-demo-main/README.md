@@ -15,6 +15,9 @@ A local FastMCP server for querying realistic e-commerce data (the Olist Brazili
 - Liveness endpoint at `http://localhost:8000/live`
 - Database-backed readiness endpoint at `http://localhost:8000/ready`
 - Tool results return structured data in both `structuredContent` and `content` (for llama.cpp clients)
+- A standalone **analytics agent** (`app/agent/`, M4) that answers a natural-language question
+  end-to-end: retrieve metadata -> generate read-only SQL -> validate -> execute through MCP
+  -> analyze -> answer, with bounded retry recovery and optional Langfuse tracing
 
 This is a local demonstration. Authentication, Azure deployment, telemetry, agents, and write operations are intentionally outside this first version.
 
@@ -77,6 +80,34 @@ Useful questions to ask against the Olist data:
 - Which product categories have the best reviews?
 
 The query tool is intended for read-only analysis. A client should use the discovery tools first when it needs to understand the schema.
+
+## Run the analytics agent (M4)
+
+The agent is a standalone consumer of the MCP server. It connects to the local LLM
+(OpenAI-compatible `LLM_BASE_URL`/`LLM_MODEL`, defaulting to the host's llama.cpp- or
+Ollama-compatible server on `http://host.docker.internal:11434/v1` with model
+`gemma-4-E4B`) and to the running MCP server, then runs the LangGraph workflow.
+
+With the MCP server running (step 5 above), ask a question:
+
+	```bash
+	uv run python -m app.agent --json "Which product categories generate the most revenue?"
+	```
+
+A plain (non-JSON) summary is printed without `--json`. The agent:
+
+1. retrieves relevant metadata (`search_metadata`) for the question;
+2. generates a candidate read-only query;
+3. validates it is a single SELECT (the read-only safety boundary);
+4. executes it through the MCP `query` tool;
+5. recovers from invalid/erroring queries up to `AGENT_MAX_ATTEMPTS` (default 3);
+6. produces an evidence-grounded answer.
+
+Because the database is reached only through the read-only MCP tools, the agent cannot
+mutate the data. Tracing is fail-open: set `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`/
+`LANGFUSE_HOST` in the environment to enable Langfuse traces; otherwise runs are
+un-instrumented.
+
 
 ## Test the MCP server step by step
 

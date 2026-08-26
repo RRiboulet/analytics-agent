@@ -548,30 +548,53 @@ Verified:
 
 ## M4 — First LangGraph Agent
 
-Status: pending
+Status: complete
 
-Implement the initial analytics workflow:
+Implemented a standalone analytics agent (`app/agent/`) that consumes the MCP
+server (DB access only through the read-only tools, per D006) and a local
+OpenAI-compatible LLM.
 
-```text
-question
-→ metadata retrieval
-→ SQL generation
-→ validation
-→ execution
-→ analysis
-→ answer
-```
+* `app/agent/state.py` — explicit `AgentState` TypedDict + `AgentStatus` (the nine
+  PLAN §9 states).
+* `app/agent/graph.py` — LangGraph state machine: understand -> retrieve metadata
+  (`search_metadata`) -> generate SQL -> validate (read-only) -> execute (`query`)
+  -> analyze -> answer, with a retry router and a bounded `AGENT_MAX_ATTEMPTS`
+  limit so invalid/erroring queries recover but never loop forever.
+* `app/agent/llm.py` — stateless OpenAI-compatible client (config-driven
+  `LLM_BASE_URL`/`LLM_MODEL`, default `gemma-4-E4B`) plus a deterministic
+  `FakeLLM` for tests.
+* `app/agent/capabilities.py` — wraps the MCP server via `langchain-mcp-adapters`;
+  surfaces query errors as the recovery signal and raises (never fabricates) on a
+  total transport failure.
+* `app/agent/tracing.py` — fail-open Langfuse tracer: enabled only when
+  `LANGFUSE_PUBLIC_KEY` is present; otherwise un-instrumented.
+* `app/agent/entrypoint.py` — `run()` API + CLI `python -m app.agent [--json] '<question>'`.
+* Agent-as-MCP-tool is deliberately deferred to M7.
 
-Goals:
-* explicit state
-* deterministic transitions where appropriate
-* MCP tool integration
-* SQL error recovery
-* maximum attempt limit
-* evidence-grounded answers
+Decisions made during M4:
 
-Success criterion:
-The agent can answer a representative set of analytical questions against the realistic database.
+* **Process topology (D-M4-1)**: standalone agent process; clear boundary between
+  the MCP server and the agent.
+* **LLM provider (D-M4-2)**: OpenAI-compatible endpoint configured by env; default
+  `http://host.docker.internal:11434/v1` (host-reachable interface), model
+  `gemma-4-E4B`.
+* **MCP transport (D-M4-3)**: reuse `langchain-mcp-adapters`; no custom transport.
+* **Observability (D-M4-4)**: Langfuse (self-hosted, free) as the tracer; D005
+  updated accordingly; fail-open.
+* **Public surface (D-M4-5)**: CLI + `run()` for M4; agent-as-tool defer to M7.
+
+Verified:
+
+* `uv run pytest` -> 84+ passed (unit: graph, state, capabilities, LLM client,
+  tracing, entrypoint; live-DB integration drives the read-only MCP boundary).
+* New agent modules at ~100% line coverage (graph/state/llm/capabilities/tracing
+  flat 100%); remaining 2 module-entry guard lines are exercised by a subprocess
+  test but only run at process entry.
+* Full gate clean: `ruff format --check .` and `ruff check .` pass.
+
+Success criterion met: the agent answers a representative set of analytical
+questions against the realistic database (validated live with a deterministic
+LLM; SQL/answer quality depends on the served model).
 
 ---
 
@@ -664,9 +687,29 @@ Reason: The analytics workflow requires explicit state, controlled iteration, re
 
 ### D005 — Observability
 
-Decision: Use LangSmith.
+Decision: Langfuse (self-hosted, free) as the V2 tracer, in the original
+LangSmith direction.
 
-Reason: Agent traces, tool calls, failures and evaluation are core to understanding and improving the system.
+Reason: Agent traces, tool calls, failures and evaluation are core to
+understanding and improving the system. LangSmith's free developer tier requires
+an account/API key; Langfuse is self-hostable at no cost and integrates with
+LangGraph via a langchain callback. The M4 tracer is fail-open so runs are never
+gated on telemetry.
+
+### D007 — Agent LLM
+
+Decision: local OpenAI-compatible LLM (llama.cpp/Ollama), configured by env.
+
+Reason: the agent's SQL generation/analysis steps use a discrete-model-call
+pattern (no open tool-calling loop within the model) for determinism; the served
+model is ``gemma-4-E4B`` over ``LLM_BASE_URL``.
+
+### D008 — Agent Tool Surface (M4)
+
+Decision: no agent-as-MCP tool in M4; expose the agent via CLI + ``run()`` only.
+
+Reason: keep the MCP server tool-only; converting the agent into an MCP tool is a
+more autonomous capability best placed in M7.
 
 ### D006 — Agent Database Access
 
@@ -695,7 +738,7 @@ These should be resolved during implementation rather than prematurely.
 
 Current milestone:
 
-**M3 — Metadata + pgvector**
+**M4 — First LangGraph agent**
 
 Completed:
 
@@ -716,7 +759,7 @@ Next:
 * [x] **M1 — Implement reproducible realistic (Olist) database**
 * [x] **M2 — MCP analytics capabilities** — `get_relationships`, `get_sample_rows`, `get_table_statistics`, `get_column_statistics`
 * [x] **M3 — Metadata + pgvector** — metadata docs, embeddings (fastembed), pgvector storage, `search_metadata`, seeding
-* [ ] **M4 — First LangGraph agent**
+* [x] **M4 — First LangGraph agent** — standalone `app/agent/`, read-only MCP boundary, retry recovery, bounded attempts, Langfuse fail-open tracing.
 
 # 18. M1 Status & Decisions
 
