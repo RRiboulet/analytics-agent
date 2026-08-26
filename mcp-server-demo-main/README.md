@@ -10,6 +10,8 @@ A local FastMCP server for querying realistic e-commerce data (the Olist Brazili
 - Tools for table discovery, table descriptions, bounded `SELECT` queries, and analytical
   schema inspection (`get_relationships`, `get_sample_rows`, `get_table_statistics`,
   `get_column_statistics`)
+- Semantic metadata search (`search_metadata`) over a pgvector index, so the agent can
+  retrieve relevant tables/columns/relationships from a natural-language question
 - Liveness endpoint at `http://localhost:8000/live`
 - Database-backed readiness endpoint at `http://localhost:8000/ready`
 - Tool results return structured data in both `structuredContent` and `content` (for llama.cpp clients)
@@ -41,7 +43,21 @@ Install Docker, Docker Compose, Python 3.13+, and `uv`.
 	uv sync
 	```
 
-4. Start the MCP server in a second terminal:
+4. (Optional) Populate the semantic metadata index. The database is initialized
+   with the pgvector extension and the empty `metadata_documents` table. Build
+   and load the metadata documents once:
+
+   ```bash
+   uv run python -m scripts.seed_metadata
+   ```
+
+   This connects with the admin role, builds the metadata documents from the
+   schema plus curated descriptions, embeds them locally via `fastembed`
+   (ONNX, no external API), and atomically replaces the index. Re-run it
+   anytime to refresh. The analytics server itself always runs as the read-only
+   role.
+
+5. Start the MCP server in a second terminal:
 
 	```bash
 	uv run mcp-analytics-server
@@ -96,9 +112,9 @@ These steps assume PostgreSQL and the MCP server are already running (see [Run l
 
 	Open the URL Inspector prints (it includes an auth token). Confirm the transport is "Streamable HTTP" with the URL `http://localhost:8000/mcp`, then click **Connect**.
 
-5. In the Inspector **Tools** tab, click **List Tools** and confirm all seven tools are present:
+5. In the Inspector **Tools** tab, click **List Tools** and confirm all eight tools are present:
    `list_tables`, `describe_table`, `query`, `get_relationships`, `get_sample_rows`,
-   `get_table_statistics`, `get_column_statistics`.
+   `get_table_statistics`, `get_column_statistics`, `search_metadata`.
 
 6. Call `list_tables` with no arguments. Expect `customers`, `sellers`, `products`, `orders`, `order_items`, `order_payments`, `order_reviews`, `geolocation`, and `product_category_translation` in the result.
 
@@ -128,6 +144,11 @@ These steps assume PostgreSQL and the MCP server are already running (see [Run l
 8e. Call `get_column_statistics` with `table_name` set to `orders` and `column_name` set to
 	`order_status`. Expect `total_rows` 99441, `distinct_count` 8, `null_count` 0, and
 	`data_type` `text`.
+
+8f. Call `search_metadata` with `question` set to `Which product categories generate the
+	most revenue?`. Expect the relevant tables, columns and relationships (e.g.
+	`order_items`, `order_items.price`, `product_category_translation`) returned by cosine
+	similarity. This requires the metadata index to have been seeded (step 4 in Run locally).
 
 9. Confirm the safety checks by calling `query` with each of the following and expecting `valid: false` with no rows returned:
 

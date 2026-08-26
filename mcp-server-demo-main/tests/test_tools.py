@@ -5,6 +5,7 @@ import asyncpg.exceptions
 import pytest
 
 from app.data_sources.postgres import PostgresClient
+from app.embedder import create_test_embedder
 from app.tools.query import register
 from app.tools.registry import register_tools
 
@@ -100,7 +101,7 @@ async def test_query_tool_masks_infrastructure_error_as_unavailable() -> None:
 
 def test_registry_registers_tools_with_shared_client() -> None:
     mcp = FakeMCP()
-    register_tools(mcp, FakeClient())  # type: ignore[arg-type]
+    register_tools(mcp, FakeClient(), create_test_embedder([[0.1]]))  # type: ignore[arg-type]
 
     assert set(mcp.tools) == {
         "list_tables",
@@ -110,4 +111,5 @@ def test_registry_registers_tools_with_shared_client() -> None:
         "get_sample_rows",
         "get_table_statistics",
         "get_column_statistics",
+        "search_metadata",
     }

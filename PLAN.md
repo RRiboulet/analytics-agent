@@ -485,7 +485,7 @@ lines and `app/sql_safety.py`). These predate M2 and are left unresolved per AGE
 
 # M3 — Metadata + pgvector
 
-Status: pending (next).
+Status: complete (see the detailed section below).
 
 Create the database metadata model and semantic retrieval layer.
 
@@ -499,6 +499,50 @@ Goals:
 Success criterion:
 A natural-language analytical question can retrieve the relevant tables, columns and
 relationships without sending the complete schema to the LLM.
+
+## M3 — Metadata + pgvector
+
+Status: complete.
+
+Implemented (all read-only, following the existing module/tool conventions):
+
+* PostgreSQL image switched to `pgvector/pgvector:pg16` (same Postgres 16, + the `vector`
+  extension). `db/init/04_metadata.sql` creates the extension and the `metadata_documents`
+  table (id, entity_type, entity_id, title, content, doc_metadata jsonb, `vector(384)`
+  embedding) with an HNSW cosine index, and grants `olist_readonly` SELECT.
+* `app/metadata_seed.json` — curated business meaning + retrieval keywords for every Olist
+  table and the key monetary/time/quality columns.
+* `app/metadata.py` — `build_metadata_documents()` combines auto-generated schema facts
+  (columns, data types via `describe_table`, FK graph via `get_relationships`) with the
+  curated seed into one self-contained document per table, column and relationship.
+* `app/embedder.py` — `MetadataEmbedder` (fastembed `BAAI/bge-small-en-v1.5`, ONNX, fully
+  local, deterministic model in a fixed `cache_dir`) with a process-wide lazy `get_embedder()`.
+* New `PostgresClient` methods: `ensure_metadata_schema`, `replace_metadata_documents`
+  (idempotent, atomic), `search_metadata` (cosine top-k). Table/column identifiers remain
+  safe; the vector is passed as a validated literal.
+* New read-only MCP tool `search_metadata(question, top_k)` (registered, tool count 7 → 8).
+* `scripts/seed_metadata.py` — reproducible admin-role seeding pipeline that (re)builds and
+  replaces the metadata index; the running server stays on the read-only role.
+* `metadata_documents` is treated as infrastructure: it is excluded from `list_tables`,
+  `describe_table`, `get_sample_rows`, `get_column_statistics` and `get_table_statistics` so
+  it never surfaces as a queryable analytics source (analytics schema stays at 9 tables).
+* Unit tests in `tests/test_metadata_tools.py` (embedder, document builder incl. legacy
+  string seed and unknown-entity defaults, search_metadata response contract, blank/invalid
+  inputs, infra-error masking, read-only annotation, empty-replace short-circuit).
+* Live-DB integration tests in `tests/test_metadata_database.py` (vector extension present,
+  seeding idempotent, read-only role can SELECT, semantic-search relevance + ordering,
+  metadata table hidden from analytics tools).
+
+Verified:
+
+* `uv run pytest` → 60 passed (43 pre-M3 + 17 new).
+* M3 modules (embedder, metadata builder, search_metadata, config, client methods) at 100%
+  line/branch coverage; remaining live-DB-only client infra lines are the pre-existing M2
+  lines that require an unreachable-db state.
+* Ruff clean for all new/changed code (remaining errors are the same pre-existing
+  deviations in `sql_safety.py` and two `postgres.py` lines, per AGENTS.md).
+* Live DB: revenue query retrieves `order_items`/`order_items.price`/product-category join
+  in the top hits; the metadata table does not appear in `list_tables`.
 
 ---
 
@@ -651,7 +695,7 @@ These should be resolved during implementation rather than prematurely.
 
 Current milestone:
 
-**M2 — MCP Analytics Capabilities**
+**M3 — Metadata + pgvector**
 
 Completed:
 
@@ -671,7 +715,8 @@ Next:
 
 * [x] **M1 — Implement reproducible realistic (Olist) database**
 * [x] **M2 — MCP analytics capabilities** — `get_relationships`, `get_sample_rows`, `get_table_statistics`, `get_column_statistics`
-* [ ] **M3 — Metadata + pgvector**
+* [x] **M3 — Metadata + pgvector** — metadata docs, embeddings (fastembed), pgvector storage, `search_metadata`, seeding
+* [ ] **M4 — First LangGraph agent**
 
 # 18. M1 Status & Decisions
 

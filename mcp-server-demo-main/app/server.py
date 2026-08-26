@@ -8,6 +8,7 @@ from starlette.responses import JSONResponse
 
 from app.config import get_settings
 from app.data_sources.postgres import PostgresClient
+from app.embedder import get_embedder
 from app.tools import register_tools
 
 
@@ -25,7 +26,7 @@ def create_mcp_server(client: PostgresClient) -> FastMCP:
         port=settings.mcp_port,
         stateless_http=True,
     )
-    register_tools(mcp, client)
+    register_tools(mcp, client, get_embedder())
 
     @mcp.custom_route("/live", methods=["GET"])
     async def liveness(_request: Request) -> JSONResponse:

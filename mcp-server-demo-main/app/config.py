@@ -18,6 +18,29 @@ class Settings(BaseSettings):
     )
     max_rows: int = Field(default=100, validation_alias="MAX_ROWS", ge=1, le=1000)
 
+    # ------------------------------------------------------------------
+    # Metadata / semantic retrieval (M3)
+    # ------------------------------------------------------------------
+
+    # Programming-language-administration URL used only by the reproducible
+    # metadata seeding script and tests. The running MCP server stays on the
+    # read-only olist_readonly role; it never uses these credentials.
+    admin_database_url: str = Field(
+        default="postgresql://olist_admin:olist_admin@localhost:5432/olist",
+        validation_alias="ADMIN_DATABASE_URL",
+    )
+    # fastembed model served locally via ONNX (no external API, no Ollama).
+    embedding_model_name: str = Field(
+        default="BAAI/bge-small-en-v1.5", validation_alias="EMBEDDING_MODEL_NAME"
+    )
+    embedding_dimensions: int = Field(default=384, validation_alias="EMBEDDING_DIMENSIONS", ge=1)
+    # Where fastembed caches the downloaded ONNX weights (deterministic, not /tmp).
+    embedding_cache_dir: str | None = Field(default=None, validation_alias="EMBEDDING_CACHE_DIR")
+    # Default number of semantic-search hits returned by search_metadata.
+    metadata_search_top_k: int = Field(
+        default=5, validation_alias="METADATA_SEARCH_TOP_K", ge=1, le=50
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:
