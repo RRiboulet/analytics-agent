@@ -215,30 +215,6 @@ class PostgresClient:
             timeout=self.query_timeout_seconds,
         )
         return [dict(row) for row in rows]
-        query = """
-            SELECT
-                child.relname AS child_table,
-                child_att.attname AS child_column,
-                parent.relname AS parent_table,
-                parent_att.attname AS parent_column,
-                con.conname AS constraint_name
-            FROM pg_constraint con
-            JOIN pg_class child ON con.conrelid = child.oid
-            JOIN pg_class parent ON con.confrelid = parent.oid
-            JOIN pg_namespace ns ON child.relnamespace = ns.oid
-            CROSS JOIN LATERAL unnest(con.conkey, con.confkey)
-                AS cols(child_attnum, parent_attnum)
-            JOIN pg_attribute child_att
-                ON child_att.attrelid = con.conrelid
-                AND child_att.attnum = cols.child_attnum
-            JOIN pg_attribute parent_att
-                ON parent_att.attrelid = con.confrelid
-                AND parent_att.attnum = cols.parent_attnum
-            WHERE con.contype = 'f' AND ns.nspname = 'public'
-            ORDER BY child.relname, con.conname, cols.child_attnum
-        """
-        rows = await self._require_pool().fetch(query, timeout=self.query_timeout_seconds)
-        return [dict(row) for row in rows]
 
     async def get_sample_rows(self, table_name: str, limit: int) -> list[dict[str, Any]] | None:
         """Return up to `limit` arbitrary rows from a public table, or None if unknown."""
