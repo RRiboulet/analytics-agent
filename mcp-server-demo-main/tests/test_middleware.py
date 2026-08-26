@@ -1,6 +1,7 @@
 """Tests for the structured content middleware."""
 
 import json
+from datetime import date, datetime, time
 from decimal import Decimal
 
 from mcp.types import CallToolResult, TextContent
@@ -43,15 +44,25 @@ def test_serializes_decimal_rows() -> None:
     assert parsed["entries"][0]["quantity"] == 100.0
 
 
-def test_serializes_nested_decimal() -> None:
-    entries = [{"machine": {"temperature": Decimal("75.5")}, "status": "running"}]
+def test_serializes_datetime_rows() -> None:
+    ts = datetime(2018, 1, 15, 12, 30, 0)
+    entries = [{"order_purchase_timestamp": ts, "event_date": date(2018, 1, 15), "t": time(12, 30)}]
     modified = copy_structured_content_to_content(_result(entries))
 
     parsed = json.loads(modified.content[0].text)
-    assert parsed["entries"][0]["machine"]["temperature"] == 75.5
+    assert parsed["entries"][0] == {
+        "order_purchase_timestamp": "2018-01-15T12:30:00",
+        "event_date": "2018-01-15",
+        "t": "12:30:00",
+    }
 
 
-def test_handles_unicode() -> None:
+def test_serializes_nested_datetime() -> None:
+    entries = [{"nested": {"at": datetime(2020, 6, 1, 8, 0, 0)}}]
+    modified = copy_structured_content_to_content(_result(entries))
+
+    parsed = json.loads(modified.content[0].text)
+    assert parsed["entries"][0]["nested"]["at"] == "2020-06-01T08:00:00"
     result = CallToolResult(
         content=[TextContent(type="text", text="Error")],
         structuredContent={"valid": False, "message": "错误发生：Unicode 测试"},

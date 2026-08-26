@@ -10,6 +10,7 @@ See: https://modelcontextprotocol.io/specification/2024-11-05/server/implementat
 """
 
 import json
+from datetime import date, time
 from decimal import Decimal
 from typing import Any
 
@@ -46,8 +47,10 @@ def _serialize_value(value: Any) -> Any:
     """
     if isinstance(value, Decimal):
         return float(value)
+    if isinstance(value, (date, time)):
+        return value.isoformat()
     if isinstance(value, dict):
         return {key: _serialize_value(item) for key, item in value.items()}
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_serialize_value(item) for item in value]
     return value
