@@ -84,9 +84,9 @@ The query tool is intended for read-only analysis. A client should use the disco
 ## Run the analytics agent (M4)
 
 The agent is a standalone consumer of the MCP server. It connects to the local LLM
-(OpenAI-compatible `LLM_BASE_URL`/`LLM_MODEL`, defaulting to the host's llama.cpp- or
-Ollama-compatible server on `http://host.docker.internal:11434/v1` with model
-`gemma-4-E4B`) and to the running MCP server, then runs the LangGraph workflow.
+(OpenAI-compatible `LLM_BASE_URL`/`LLM_MODEL`, defaulting to the host's
+llama.cpp server on `http://host.docker.internal:8080/v1` with model `gemma-4`,
+which must match the `--alias` of the running llama-server) and to the running MCP server, then runs the LangGraph workflow.
 
 With the MCP server running (step 5 above), ask a question:
 

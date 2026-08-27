@@ -53,10 +53,23 @@ class Settings(BaseSettings):
     # host.docker.internal); the model server must listen on a
     # container-reachable interface.
     llm_base_url: str = Field(
-        default="http://host.docker.internal:11434/v1", validation_alias="LLM_BASE_URL"
+        # llama.cpp serves the OpenAI-compatible API on its HTTP port (8080 by
+        # default). host.docker.internal lets the devcontainer reach the host's
+        # llama-server; the server must listen on a container-reachable interface.
+        default="http://host.docker.internal:8080/v1",
+        validation_alias="LLM_BASE_URL",
     )
-    llm_model: str = Field(default="gemma-4-E4B", validation_alias="LLM_MODEL")
+    # llama.cpp exposes the model under the name given by --alias, not the GGUF
+    # filename. The server below is started with --alias gemma-4.
+    llm_model: str = Field(default="gemma-4", validation_alias="LLM_MODEL")
     llm_timeout_seconds: float = Field(default=120.0, validation_alias="LLM_TIMEOUT_SECONDS", gt=0)
+    # Caps each generation's output tokens. This matters on servers started with
+    # --reasoning on, where the model spends tokens on chain-of-thought before
+    # emitting the final SQL/answer; without a cap the reasoning phase can crowd
+    # out the final output and yield empty/truncated text.
+    llm_max_tokens: int | None = Field(
+        default=4096, validation_alias="LLM_MAX_TOKENS", ge=1, le=32768
+    )
     # Maximum regeneration attempts before the agent fails out (no infinite
     # loops when SQL stays invalid or errors).
     agent_max_attempts: int = Field(default=3, validation_alias="AGENT_MAX_ATTEMPTS", ge=1, le=10)

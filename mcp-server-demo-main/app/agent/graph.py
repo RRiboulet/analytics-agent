@@ -109,7 +109,14 @@ def build_graph(services: AgentServices) -> Any:
     async def _generate(state: AgentState) -> dict[str, Any]:
         metadata_text = _build_metadata_text(state.get("metadata", []))
         schema_text = _build_schema_text(state.get("schema", []), state.get("relationships", []))
-        candidate = await services.llm.generate_sql(state["question"], metadata_text, schema_text)
+        # If a previous attempt was rejected (unsafe or errored at execution),
+        # feed that error back to the model so it corrects its SQL instead of
+        # blindly repeating the same query. Otherwise it regenerates identically
+        # and burns the attempt budget (PLAN item 7: recover from errors).
+        prior_error = state.get("query_error") or state.get("validation_error")
+        candidate = await services.llm.generate_sql(
+            state["question"], metadata_text, schema_text, prior_error=prior_error
+        )
         return {
             "sql": candidate,
             "status": AgentStatus.VALIDATING_SQL,

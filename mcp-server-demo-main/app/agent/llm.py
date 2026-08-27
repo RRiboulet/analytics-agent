@@ -39,8 +39,14 @@ _ANSWER_SYSTEM = (
 class LLM(Protocol):
     """The two model capabilities the agent graph needs."""
 
-    async def generate_sql(self, question: str, metadata: str, schema: str) -> str:
-        """Return a candidate read-only SQL query for `question`."""
+    async def generate_sql(
+        self, question: str, metadata: str, schema: str, *, prior_error: str | None = None
+    ) -> str:
+        """Return a candidate read-only SQL query for `question`.
+
+        ``prior_error`` carries the previous attempt's validation or execution
+        failure so the model can correct a rejected query on retry.
+        """
         ...
 
     async def generate_answer(self, question: str, sql: str, result: str) -> str:
@@ -49,19 +55,19 @@ class LLM(Protocol):
 
 
 def _request_payload(
-    model: str, system: str, user: str, *, timeout: float
+    model: str, system: str, user: str, *, timeout: float, max_tokens: int | None = None
 ) -> tuple[dict[str, Any], dict[str, float]]:
-    return (
-        {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": 0,
-        },
-        {"timeout": timeout},
-    )
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0,
+    }
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    return payload, {"timeout": timeout}
 
 
 class LLMClient:
@@ -72,17 +78,21 @@ class LLMClient:
         base_url: str | None = None,
         model: str | None = None,
         timeout_seconds: float | None = None,
+        max_tokens: int | None = None,
         transport: Any | None = None,
     ) -> None:
         settings = get_settings()
         self.base_url = (base_url or settings.llm_base_url).rstrip("/")
         self.model = model or settings.llm_model
         self.timeout_seconds = timeout_seconds or settings.llm_timeout_seconds
+        self.max_tokens = max_tokens or settings.llm_max_tokens
         # httpx transport override is supported so tests can stub the network.
         self._transport = transport
 
     async def _complete(self, system: str, user: str) -> str:
-        payload, opts = _request_payload(self.model, system, user, timeout=self.timeout_seconds)
+        payload, opts = _request_payload(
+            self.model, system, user, timeout=self.timeout_seconds, max_tokens=self.max_tokens
+        )
         client = httpx.AsyncClient(transport=self._transport)
         try:
             resp = await client.post(f"{self.base_url}/chat/completions", json=payload, **opts)
@@ -92,10 +102,17 @@ class LLMClient:
         finally:
             await client.aclose()
 
-    async def generate_sql(self, question: str, metadata: str, schema: str) -> str:
+    async def generate_sql(
+        self, question: str, metadata: str, schema: str, *, prior_error: str | None = None
+    ) -> str:
         user = (
             f"Question:\n{question}\n\nRelevant metadata:\n{metadata}\n\nSchema summary:\n{schema}"
         )
+        if prior_error:
+            user += (
+                "\n\nThe previous attempt failed with this error. Correct your SQL to "
+                f"resolve it — use only real columns/tables from the schema:\n{prior_error}"
+            )
         return await self._complete(_SQL_SYSTEM, user)
 
     async def generate_answer(self, question: str, sql: str, result: str) -> str:
@@ -124,7 +141,9 @@ class FakeLLM:
             return self.sql_sequence.pop(0)
         return self.scripts.get(question, self.sql)
 
-    async def generate_sql(self, question: str, metadata: str, schema: str) -> str:
+    async def generate_sql(
+        self, question: str, metadata: str, schema: str, *, prior_error: str | None = None
+    ) -> str:
         return self._future_sql(question)
 
     async def generate_answer(self, question: str, sql: str, result: str) -> str:

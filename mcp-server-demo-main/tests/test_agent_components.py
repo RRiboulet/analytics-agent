@@ -23,7 +23,7 @@ def test_parse_args_plain_and_json() -> None:
 @pytest.mark.asyncio
 async def test_run_agent_with_fake_components(monkeypatch) -> None:
     class FakeLLM:
-        async def generate_sql(self, *a):  # type: ignore[no-untyped-def]
+        async def generate_sql(self, *a, **k):  # type: ignore[no-untyped-def]
             return "SELECT 1"
 
         async def generate_answer(self, *a):  # type: ignore[no-untyped-def]
@@ -179,6 +179,10 @@ def test_request_payload_shape() -> None:
     assert payload["messages"][0]["role"] == "system"
     assert payload["messages"][1]["content"] == "usr"
     assert payload["temperature"] == 0
+    assert "max_tokens" not in payload  # omitted when not configured
+
+    capped, _ = _request_payload("m", "sys", "usr", timeout=1.0, max_tokens=4096)
+    assert capped["max_tokens"] == 4096
     assert opts == {"timeout": 1.0}
 
 

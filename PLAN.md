@@ -559,10 +559,14 @@ OpenAI-compatible LLM.
 * `app/agent/graph.py` — LangGraph state machine: understand -> retrieve metadata
   (`search_metadata`) -> generate SQL -> validate (read-only) -> execute (`query`)
   -> analyze -> answer, with a retry router and a bounded `AGENT_MAX_ATTEMPTS`
-  limit so invalid/erroring queries recover but never loop forever.
+  limit so invalid/erroring queries recover but never loop forever. On retry the
+  prior validation/execution error is fed back to the model so it can correct
+  its SQL instead of blindly regenerating the same failing query.
 * `app/agent/llm.py` — stateless OpenAI-compatible client (config-driven
-  `LLM_BASE_URL`/`LLM_MODEL`, default `gemma-4-E4B`) plus a deterministic
-  `FakeLLM` for tests.
+  `LLM_BASE_URL`/`LLM_MODEL`, default llama.cpp on port 8080 with model
+  `gemma-4` matching the server's `--alias`; `LLM_MAX_TOKENS` caps output so the
+  `--reasoning on` model doesn't spend its budget on chain-of-thought) plus a
+  deterministic `FakeLLM` for tests.
 * `app/agent/capabilities.py` — wraps the MCP server via `langchain-mcp-adapters`;
   surfaces query errors as the recovery signal and raises (never fabricates) on a
   total transport failure.
@@ -576,8 +580,9 @@ Decisions made during M4:
 * **Process topology (D-M4-1)**: standalone agent process; clear boundary between
   the MCP server and the agent.
 * **LLM provider (D-M4-2)**: OpenAI-compatible endpoint configured by env; default
-  `http://host.docker.internal:11434/v1` (host-reachable interface), model
-  `gemma-4-E4B`.
+  `http://host.docker.internal:8080/v1` (host-reachable llama.cpp server), model
+  `gemma-4` (must match the server's `--alias`). `LLM_MAX_TOKENS` caps output so
+  the reasoning-enabled model cannot crowd out its final SQL/answer.
 * **MCP transport (D-M4-3)**: reuse `langchain-mcp-adapters`; no custom transport.
 * **Observability (D-M4-4)**: Langfuse (self-hosted, free) as the tracer; D005
   updated accordingly; fail-open.
@@ -702,7 +707,7 @@ Decision: local OpenAI-compatible LLM (llama.cpp/Ollama), configured by env.
 
 Reason: the agent's SQL generation/analysis steps use a discrete-model-call
 pattern (no open tool-calling loop within the model) for determinism; the served
-model is ``gemma-4-E4B`` over ``LLM_BASE_URL``.
+model is ``gemma-4`` (matching the llama.cpp ``--alias``) over ``LLM_BASE_URL``.
 
 ### D008 — Agent Tool Surface (M4)
 

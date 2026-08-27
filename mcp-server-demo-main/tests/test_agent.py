@@ -181,6 +181,38 @@ async def test_fails_after_persistent_query_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_query_error_feedback_reaches_model_and_corrects() -> None:
+    """A rejected query must be fed back to the model so it can self-correct."""
+
+    seen_errors: list[str | None] = []
+    calls = 0
+
+    class FeedbackLLM(FakeLLM):
+        async def generate_sql(
+            self, question: str, metadata: str, schema: str, *, prior_error: str | None = None
+        ) -> str:
+            nonlocal calls
+            calls += 1
+            seen_errors.append(prior_error)
+            # First (blind) generation references a column that does not exist; the
+            # retry, seeing the prior error, drops the bad column.
+            if calls == 1:
+                return "SELECT SUM(t2.price * t2.quantity) x FROM order_items t2"
+            return "SELECT SUM(t2.price) x FROM order_items t2"
+
+    caps = SeqCapabilities([False, True])  # first query fails, corrected one succeeds
+    state = await _run(
+        AgentServices(llm=FeedbackLLM(answer="ok"), capabilities=caps, max_attempts=3)
+    )
+
+    assert state["status"] == AgentStatus.COMPLETED
+    assert state["attempts"] == 2
+    assert state.get("query_error") is None
+    # The retry generation saw the previous execution error as feedback.
+    assert seen_errors == [None, "Query failed: bad column"]
+
+
+@pytest.mark.asyncio
 async def test_transport_failure_propagates_never_fabricates() -> None:
     """A total capability outage raises rather than yielding a made-up answer."""
 
