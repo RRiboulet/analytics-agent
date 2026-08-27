@@ -22,8 +22,9 @@ class AgentTracer:
         """Return callbacks to attach to the graph config, or None to disable."""
         if not os.environ.get(LANGFUSE_PUBLIC_KEY):
             return None
-        # Imported lazily so module import never requires langfuse.
-        from langfuse.langchain import CallbackHandler
+        # Fail-open: keep the module importable even when langfuse is not
+        # installed, and only pull the SDK back in when tracing is enabled.
+        from langfuse.langchain import CallbackHandler  # noqa: PLC0415
 
         return [CallbackHandler()]
 

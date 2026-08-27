@@ -65,12 +65,12 @@ def test_serializes_nested_datetime() -> None:
     assert parsed["entries"][0]["nested"]["at"] == "2020-06-01T08:00:00"
     result = CallToolResult(
         content=[TextContent(type="text", text="Error")],
-        structuredContent={"valid": False, "message": "错误发生：Unicode 测试"},
+        structuredContent={"valid": False, "message": "错误发生：Unicode 测试"},  # noqa: RUF001
     )
     modified = copy_structured_content_to_content(result)
 
     parsed = json.loads(modified.content[0].text)
-    assert parsed["message"] == "错误发生：Unicode 测试"
+    assert parsed["message"] == "错误发生：Unicode 测试"  # noqa: RUF001
 
 
 def test_none_structured_content_is_unchanged() -> None:

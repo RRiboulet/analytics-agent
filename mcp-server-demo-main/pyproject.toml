@@ -42,4 +42,20 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
-lint.select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle
+    "F",      # pyflakes
+    "I",      # isort
+    "UP",     # modern Python
+    "B",      # bugbear
+    "SIM",    # suspicious/needlessly complex code
+    "C4",     # unnecessary comprehensions
+    "RUF",    # Ruff-specific
+    "PLC0415",# imports should generally be at top level
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

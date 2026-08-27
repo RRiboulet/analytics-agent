@@ -183,24 +183,23 @@ class PostgresClient:
         """Atomically replace all metadata documents with `documents` (admin role)."""
         if not documents:
             return 0
-        async with self._require_pool().acquire() as conn:
-            async with conn.transaction():
-                await conn.execute("DELETE FROM metadata_documents")
-                for doc in documents:
-                    await conn.execute(
-                        """
+        async with self._require_pool().acquire() as conn, conn.transaction():
+            await conn.execute("DELETE FROM metadata_documents")
+            for doc in documents:
+                await conn.execute(
+                    """
                         INSERT INTO metadata_documents
                             (id, entity_type, entity_id, title, content, doc_metadata, embedding)
                         VALUES ($1, $2, $3, $4, $5, $6, $7)
                         """,
-                        doc["id"],
-                        doc["entity_type"],
-                        doc["entity_id"],
-                        doc["title"],
-                        doc["content"],
-                        asyncpg_to_json(doc.get("doc_metadata") or {}),
-                        _format_vector(doc["embedding"]),
-                    )
+                    doc["id"],
+                    doc["entity_type"],
+                    doc["entity_id"],
+                    doc["title"],
+                    doc["content"],
+                    asyncpg_to_json(doc.get("doc_metadata") or {}),
+                    _format_vector(doc["embedding"]),
+                )
         return len(documents)
 
     async def search_metadata(self, query_vector: list[float], limit: int) -> list[dict[str, Any]]:

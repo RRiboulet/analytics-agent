@@ -116,7 +116,7 @@ async def test_expected_tables_present_in_live_db() -> None:
         if not await _connect(c):
             pytest.skip("no live database")
         tables = set(await c.list_tables())
-        assert EXPECTED_TABLES <= tables
+        assert tables >= EXPECTED_TABLES
     finally:
         await c.close()
 

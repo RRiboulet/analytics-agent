@@ -60,7 +60,9 @@ class MCPCapabilities:
     async def _ensure_connected(self) -> None:
         if self._client is not None:
             return
-        from langchain_mcp_adapters.client import MultiServerMCPClient
+        # Defer the heavy langchain-mcp-adapters SDK import until the first real
+        # MCP call, so importing this module stays lightweight for consumers.
+        from langchain_mcp_adapters.client import MultiServerMCPClient  # noqa: PLC0415
 
         client = MultiServerMCPClient(
             {"analytics": {"transport": "streamable_http", "url": self.url}}

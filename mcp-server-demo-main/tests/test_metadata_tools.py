@@ -10,6 +10,8 @@ from typing import Any
 
 import pytest
 
+import app.metadata as metadata_mod
+from app.config import get_settings
 from app.data_sources.postgres import PostgresClient
 from app.embedder import MetadataEmbedder, create_test_embedder
 from app.metadata import build_metadata_documents
@@ -121,8 +123,6 @@ def test_stub_embedder_returns_fixed_vectors() -> None:
 
 
 def test_real_embedder_returns_finite_vectors_of_configured_dimension() -> None:
-    from app.config import get_settings
-
     settings = get_settings()
     embedder = MetadataEmbedder(
         model_name=settings.embedding_model_name,
@@ -179,7 +179,6 @@ async def test_build_metadata_documents_merges_curated_seed() -> None:
 @pytest.mark.asyncio
 async def test_build_metadata_documents_accepts_legacy_string_seed() -> None:
     """Plain-string seed entries (no keywords dict) are still supported."""
-    import app.metadata as metadata_mod
 
     def legacy_seed() -> dict[str, Any]:
         return {

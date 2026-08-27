@@ -8,6 +8,7 @@ when a public key is configured).
 
 import asyncio
 import json
+import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -83,8 +84,6 @@ def _parse_args(argv: list[str]) -> tuple[str, bool]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    import sys
-
     args = sys.argv[1:] if argv is None else argv
     if not args:
         raise SystemExit("Usage: python -m app.agent [--json] '<question>'")

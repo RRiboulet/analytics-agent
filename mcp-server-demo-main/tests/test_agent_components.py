@@ -1,5 +1,7 @@
 """Component tests for M4 support modules using stubs (no network/model)."""
 
+import subprocess
+import sys as _sys
 from pathlib import Path
 
 import httpx
@@ -53,8 +55,6 @@ def test_main_cli_json_output(monkeypatch, capsys) -> None:
         )
 
     monkeypatch.setattr(entrypoint, "run_agent", fake_run)  # type: ignore[attr-defined]
-    import sys as _sys
-
     monkeypatch.setattr(_sys, "argv", ["prog", "--json", "What is order status?"])
     entrypoint.main()
     captured = capsys.readouterr().out
@@ -63,8 +63,6 @@ def test_main_cli_json_output(monkeypatch, capsys) -> None:
 
 
 def test_main_cli_no_args_raises(monkeypatch, capsys) -> None:
-    import sys as _sys
-
     monkeypatch.setattr(_sys, "argv", ["prog"])
     with pytest.raises(SystemExit):
         entrypoint.main()
@@ -77,8 +75,6 @@ def test_main_cli_plain_output(monkeypatch, capsys) -> None:
         )
 
     monkeypatch.setattr(entrypoint, "run_agent", fake_run)  # type: ignore[attr-defined]
-    import sys as _sys
-
     monkeypatch.setattr(_sys, "argv", ["prog", "What is the status?"])
     entrypoint.main()
     captured = capsys.readouterr().out
@@ -89,12 +85,9 @@ def test_main_cli_plain_output(monkeypatch, capsys) -> None:
 
 def test_agent_main_module_guard_runs() -> None:
     """Running `python -m app.agent` with no args hits the usage guard."""
-    import subprocess
-    import sys
-
     project_root = Path(__file__).resolve().parents[1]
     proc = subprocess.run(
-        [sys.executable, "-m", "app.agent"], capture_output=True, text=True, cwd=project_root
+        [_sys.executable, "-m", "app.agent"], capture_output=True, text=True, cwd=project_root
     )
     assert proc.returncode != 0
     assert "Usage:" in (proc.stderr or "") or "Usage:" in (proc.stdout or "")
@@ -200,8 +193,6 @@ def test_tracer_disabled_and_callbacks_for(monkeypatch) -> None:
 
 def test_tracer_enabled_gives_callback(monkeypatch) -> None:
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
-    import langfuse.langchain  # noqa: F401
-
     monkeypatch.setattr("langfuse.langchain.CallbackHandler", lambda: "fake-handler")
     assert AgentTracer().callbacks() == ["fake-handler"]
     assert callbacks_for(AgentTracer()) == ["fake-handler"]
