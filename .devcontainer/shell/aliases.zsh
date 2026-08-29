@@ -22,8 +22,3 @@ alias ..='cd ..'
 alias ...='cd ../..'
 alias c='clear'
 alias reload-zsh='exec zsh'
-
-# Safer common commands
-alias gco='git checkout'
-alias gsw='git switch'
-alias glg='git log --oneline --decorate --graph -20'
