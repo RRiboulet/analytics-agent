@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from app.agent import entrypoint
 from app.agent.capabilities import MCPCapabilities, parse_tool_result
 from app.agent.graph import AgentServices, build_graph
-from app.agent.llm import LLMClient, LLMError, _request_payload
+from app.agent.llm import FakeLLM, LLMClient, LLMError, _request_payload
 from app.agent.tracing import AgentTracer, callbacks_for
 
 # ---------------------------------------------------------------------------
@@ -52,6 +52,30 @@ async def test_run_agent_with_fake_components(monkeypatch) -> None:
     assert res.status == "completed"
     assert res.answer == "answer"
     assert res.sql is not None
+
+
+@pytest.mark.asyncio
+async def test_run_agent_surfaces_retrieval_error(monkeypatch) -> None:
+    """A failed MCP discovery layer fails the run with the tool error surfaced."""
+
+    class FailingDiscovery:
+        async def call_tool(self, name, args=None):  # type: ignore[no-untyped-def]
+            return {
+                "valid": False,
+                "message": "Tool error: connection refused",
+                "entries": [],
+            }
+
+        async def close(self):  # type: ignore[no-untyped-def]
+            pass
+
+    monkeypatch.setattr(entrypoint, "LLMClient", FakeLLM)
+    monkeypatch.setattr(entrypoint, "MCPCapabilities", FailingDiscovery)
+    res = await entrypoint.run_agent("Q")
+    assert res.status == "failed"
+    assert res.answer is None
+    assert res.error is not None
+    assert "search_metadata" in res.error
 
 
 def test_main_cli_json_output(monkeypatch, capsys) -> None:

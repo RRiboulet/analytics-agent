@@ -93,6 +93,31 @@ class StubCapabilities:
         pass
 
 
+class FlakyDiscoveryCapabilities(StubCapabilities):
+    """Discovery calls return valid=false for the first `fail_count` rounds.
+
+    One "round" is the three discovery calls of a single retrieve_metadata
+    pass; query calls are unaffected. Mirrors the structured failure mode of
+    MCPCapabilities (masked infrastructure errors, unknown tools).
+    """
+
+    def __init__(self, fail_count: int = 1) -> None:
+        super().__init__()
+        self.fail_count = fail_count
+
+    async def call_tool(self, name, args=None) -> dict:
+        if name in ("search_metadata", "list_tables", "get_relationships"):
+            discovery_calls_so_far = sum(1 for n, _ in self.calls if n != "query")
+            if discovery_calls_so_far < 3 * self.fail_count:
+                self.calls.append((name, args))
+                return {
+                    "valid": False,
+                    "message": "Tool error: connection refused",
+                    "entries": [],
+                }
+        return await super().call_tool(name, args)
+
+
 class SeqCapabilities(StubCapabilities):
     """Query returns a scripted sequence of valid/failed results."""
 
@@ -210,6 +235,56 @@ async def test_query_error_feedback_reaches_model_and_corrects() -> None:
     assert state.get("query_error") is None
     # The retry generation saw the previous execution error as feedback.
     assert seen_errors == [None, "Query failed: bad column"]
+
+
+@pytest.mark.asyncio
+async def test_retries_after_retrieval_failure_then_succeeds() -> None:
+    """A failed MCP discovery call retries retrieval instead of generating SQL blind."""
+    llm = FakeLLM(sql="SELECT 1", answer="ok")
+    caps = FlakyDiscoveryCapabilities(fail_count=1)
+    state = await _run(AgentServices(llm=llm, capabilities=caps, max_attempts=3))
+
+    assert state["status"] == AgentStatus.COMPLETED
+    assert state["attempts"] == 2  # initial retrieval + one retrieval retry
+    # The successful pass cleared the retrieval errors.
+    assert state["retrieval_errors"] == []
+    # Discovery ran twice (first round failed, retry re-ran it) before querying.
+    discovery_calls = [n for n, _ in caps.calls if n != "query"]
+    assert len(discovery_calls) == 6
+    # SQL generation only happened after metadata was actually available.
+    assert caps.calls[-1][0] == "query"
+
+
+@pytest.mark.asyncio
+async def test_fails_cleanly_after_persistent_retrieval_failure() -> None:
+    """Persistent discovery failure fails the run with the tool error surfaced."""
+    llm = FakeLLM(sql="SELECT 1", answer="should not be used")
+    state = await _run(
+        AgentServices(
+            llm=llm, capabilities=FlakyDiscoveryCapabilities(fail_count=99), max_attempts=2
+        )
+    )
+
+    assert state["status"] == AgentStatus.FAILED
+    assert state["attempts"] == 2
+    assert state["retrieval_errors"]
+    assert "search_metadata" in state["retrieval_errors"][0]
+    assert "connection refused" in state["retrieval_errors"][0]
+    # Never fabricate: no SQL was generated from a blind schema, no answer.
+    assert state.get("sql") is None
+    assert state.get("answer") is None
+
+
+@pytest.mark.asyncio
+async def test_sql_retry_does_not_rerun_retrieval() -> None:
+    """An SQL validation retry goes back to generation, not re-discovery."""
+    llm = FakeLLM(sql_sequence=["DELETE FROM orders", "SELECT 1"], answer="ok")
+    caps = StubCapabilities()
+    state = await _run(AgentServices(llm=llm, capabilities=caps, max_attempts=3))
+
+    assert state["status"] == AgentStatus.COMPLETED
+    # Discovery ran exactly once; the retry went to generate_sql.
+    assert [n for n, _ in caps.calls].count("search_metadata") == 1
 
 
 @pytest.mark.asyncio

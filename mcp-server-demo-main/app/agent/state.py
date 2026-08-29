@@ -43,6 +43,12 @@ class AgentState(TypedDict, total=False):
     # malformed response). LLM failures retry up to the attempt limit and then
     # fail cleanly instead of crashing the run with a raw httpx traceback.
     llm_error: str
+    # Per-tool failures during metadata retrieval (transport errors, unknown
+    # tools, or masked infrastructure failures returned as valid=false). A
+    # non-empty list routes the run back into retrieval (bounded retry) instead
+    # of generating SQL from a possibly empty schema; an empty list on retry
+    # means the retry targets SQL generation, not retrieval.
+    retrieval_errors: list[str]
     # Query results and the analysis/answer derived from them.
     result: list[dict[str, Any]]
     analysis: str

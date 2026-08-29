@@ -79,7 +79,14 @@ async def run_agent(question: str) -> RunResult:
         sql=state.get("bounded_sql") or state.get("sql"),
         attempts=state.get("attempts", 0),
         state=state,
-        error=(state.get("llm_error") or state.get("query_error") or state.get("validation_error")),
+        error=(
+            state.get("llm_error")
+            or state.get("query_error")
+            or state.get("validation_error")
+            # Completed runs always have an empty list (a failed retrieval is
+            # retried or fails the run), so this only ever carries an error.
+            or ((state.get("retrieval_errors") or [None])[0])
+        ),
     )
 
 

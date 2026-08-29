@@ -87,24 +87,40 @@ def build_graph(services: AgentServices) -> Any:
         return {"status": AgentStatus.RETRIEVING_METADATA, "attempts": 1}
 
     async def _retrieve(state: AgentState) -> dict[str, Any]:
-        hits = (
-            await services.capabilities.call_tool(
-                "search_metadata", {"question": state["question"]}
-            )
-        ).get("entries", [])
-        tables = (await services.capabilities.call_tool("list_tables", {})).get("entries", [])
-        relationships = (await services.capabilities.call_tool("get_relationships", {})).get(
-            "entries", []
-        )
-        return {
+        # Every discovery call's validity is surfaced in state: a failed call
+        # (masked infrastructure error, unknown tool, empty result) must not be
+        # silently degraded to an empty schema — the run retries retrieval
+        # (bounded) or fails cleanly instead of generating SQL blind.
+        discovery_args: dict[str, dict[str, Any]] = {
+            "search_metadata": {"question": state["question"]},
+            "list_tables": {},
+            "get_relationships": {},
+        }
+        results: dict[str, dict[str, Any]] = {}
+        retrieval_errors: list[str] = []
+        for name, args in discovery_args.items():
+            result = await services.capabilities.call_tool(name, args)
+            results[name] = result
+            if not result.get("valid", False):
+                retrieval_errors.append(f"{name}: {result.get('message', 'failed')}")
+        hits = results["search_metadata"].get("entries", [])
+        tables = results["list_tables"].get("entries", [])
+        relationships = results["get_relationships"].get("entries", [])
+        update: dict[str, Any] = {
             "metadata": hits,
             "relevant_tables": _table_names_from(hits),
             "schema": tables,
             "relationships": relationships,
-            "status": AgentStatus.GENERATING_SQL,
             "validation_error": state.get("validation_error"),
             "query_error": state.get("query_error"),
+            # Cleared on a clean pass so the shared retry router can tell a
+            # retrieval retry (errors set) from an SQL retry (errors empty).
+            "retrieval_errors": retrieval_errors,
+            "status": (
+                AgentStatus.RETRIEVING_METADATA if retrieval_errors else AgentStatus.GENERATING_SQL
+            ),
         }
+        return update
 
     async def _generate(state: AgentState) -> dict[str, Any]:
         metadata_text = _build_metadata_text(state.get("metadata", []))
@@ -174,6 +190,17 @@ def build_graph(services: AgentServices) -> Any:
     async def _fail(state: AgentState) -> dict[str, Any]:
         return {"status": AgentStatus.FAILED}
 
+    def _route_after_retrieve(state: AgentState) -> str:
+        if state.get("retrieval_errors"):
+            return RETRY_EDGE if state.get("attempts", 1) < services.max_attempts else FAIL_EDGE
+        return GENERATE
+
+    def _route_after_retry(state: AgentState) -> str:
+        # A retry caused by failed metadata discovery re-runs retrieval; an SQL
+        # validation/execution/LLM retry goes straight back to generation (the
+        # retrieved metadata is still valid in that case).
+        return RETRIEVE if state.get("retrieval_errors") else GENERATE
+
     def _route_after_validate(state: AgentState) -> str:
         if state.get("validation_error"):
             return RETRY_EDGE if state.get("attempts", 1) < services.max_attempts else FAIL_EDGE
@@ -206,7 +233,11 @@ def build_graph(services: AgentServices) -> Any:
 
     g.add_edge(START, PLAN)
     g.add_edge(PLAN, RETRIEVE)
-    g.add_edge(RETRIEVE, GENERATE)
+    g.add_conditional_edges(
+        RETRIEVE,
+        _route_after_retrieve,
+        {GENERATE: GENERATE, RETRY_EDGE: RETRY, FAIL_EDGE: FAIL},
+    )
     # LLM failures during SQL generation are recoverable: retry (bounded) or
     # fail cleanly instead of crashing the run with a raw httpx traceback.
     g.add_conditional_edges(
@@ -222,7 +253,7 @@ def build_graph(services: AgentServices) -> Any:
     g.add_conditional_edges(
         ANALYZE, _route_after_analyze, {END: END, RETRY_EDGE: RETRY, FAIL_EDGE: FAIL}
     )
-    g.add_edge(RETRY, GENERATE)
+    g.add_conditional_edges(RETRY, _route_after_retry, {RETRIEVE: RETRIEVE, GENERATE: GENERATE})
     g.add_edge(FAIL, END)
 
     return g.compile()

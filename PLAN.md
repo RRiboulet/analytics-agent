@@ -649,6 +649,20 @@ Implemented (D005: Langfuse — currently Langfuse Cloud, see D005; the original
   plus an end-to-end test asserting the graph trace contains the nested LLM runs
   and MCP tool calls. Fail-open semantics are covered.
 
+Subsequent hardening (silent MCP discovery failures):
+
+* Discovery-call validity is no longer silently degraded to empty schema/metadata:
+  `AgentState.retrieval_errors` records per-tool `valid=false` results (masked
+  infrastructure errors, unknown tools), making them visible in the trace.
+* A retrieval pass with errors is retried (bounded by `AGENT_MAX_ATTEMPTS`) and
+  the shared `retry` node now re-runs *retrieval* for retrieval errors while
+  SQL retries still go straight back to generation; persistent discovery
+  failure ends the run with `failed` and the tool error surfaced in the CLI
+  output. Exceptions from `call_tool` keep propagating (unchanged behavior).
+* `.env` (if present) is loaded by the tracer via `find_dotenv(usecwd=True)`,
+  matching pydantic Settings resolution; unit tests never export telemetry
+  (autouse conftest fixture strips `LANGFUSE_*` keys).
+
 Verified:
 
 * `uv run pytest` -> all passed (60 pre-M5 unit/component + new tracing tests).
