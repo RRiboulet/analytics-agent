@@ -98,11 +98,15 @@ def build_graph(services: AgentServices) -> Any:
         }
         results: dict[str, dict[str, Any]] = {}
         retrieval_errors: list[str] = []
+        schema_unavailable = False
         for name, args in discovery_args.items():
             result = await services.capabilities.call_tool(name, args)
             results[name] = result
             if not result.get("valid", False):
                 retrieval_errors.append(f"{name}: {result.get('message', 'failed')}")
+                if name != "search_metadata":
+                    # Without the table/FK graph no grounded SQL is possible.
+                    schema_unavailable = True
         hits = results["search_metadata"].get("entries", [])
         tables = results["list_tables"].get("entries", [])
         relationships = results["get_relationships"].get("entries", [])
@@ -114,10 +118,13 @@ def build_graph(services: AgentServices) -> Any:
             "validation_error": state.get("validation_error"),
             "query_error": state.get("query_error"),
             # Cleared on a clean pass so the shared retry router can tell a
-            # retrieval retry (errors set) from an SQL retry (errors empty).
+            # retrieval retry (schema unavailable) from an SQL retry.
             "retrieval_errors": retrieval_errors,
+            "schema_unavailable": schema_unavailable,
             "status": (
-                AgentStatus.RETRIEVING_METADATA if retrieval_errors else AgentStatus.GENERATING_SQL
+                AgentStatus.RETRIEVING_METADATA
+                if schema_unavailable
+                else AgentStatus.GENERATING_SQL
             ),
         }
         return update
@@ -191,15 +198,18 @@ def build_graph(services: AgentServices) -> Any:
         return {"status": AgentStatus.FAILED}
 
     def _route_after_retrieve(state: AgentState) -> str:
-        if state.get("retrieval_errors"):
+        # A search_metadata failure alone degrades the run to schema-only
+        # retrieval (recorded in retrieval_errors); only a broken schema
+        # discovery (list_tables / get_relationships) blocks SQL generation.
+        if state.get("schema_unavailable"):
             return RETRY_EDGE if state.get("attempts", 1) < services.max_attempts else FAIL_EDGE
         return GENERATE
 
     def _route_after_retry(state: AgentState) -> str:
-        # A retry caused by failed metadata discovery re-runs retrieval; an SQL
+        # A retry caused by failed schema discovery re-runs retrieval; an SQL
         # validation/execution/LLM retry goes straight back to generation (the
-        # retrieved metadata is still valid in that case).
-        return RETRIEVE if state.get("retrieval_errors") else GENERATE
+        # retrieved schema is still valid in that case).
+        return RETRIEVE if state.get("schema_unavailable") else GENERATE
 
     def _route_after_validate(state: AgentState) -> str:
         if state.get("validation_error"):

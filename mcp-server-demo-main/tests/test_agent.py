@@ -118,6 +118,20 @@ class FlakyDiscoveryCapabilities(StubCapabilities):
         return await super().call_tool(name, args)
 
 
+class SearchOnlyFailureCapabilities(StubCapabilities):
+    """Only search_metadata fails (e.g. metadata index down); schema tools work."""
+
+    async def call_tool(self, name, args=None) -> dict:
+        if name == "search_metadata":
+            self.calls.append((name, args))
+            return {
+                "valid": False,
+                "message": "Tool error: metadata index unavailable",
+                "entries": [],
+            }
+        return await super().call_tool(name, args)
+
+
 class SeqCapabilities(StubCapabilities):
     """Query returns a scripted sequence of valid/failed results."""
 
@@ -285,6 +299,23 @@ async def test_sql_retry_does_not_rerun_retrieval() -> None:
     assert state["status"] == AgentStatus.COMPLETED
     # Discovery ran exactly once; the retry went to generate_sql.
     assert [n for n, _ in caps.calls].count("search_metadata") == 1
+
+
+@pytest.mark.asyncio
+async def test_degrades_to_schema_only_when_search_metadata_fails() -> None:
+    """A search_metadata failure alone proceeds with the schema (recorded, not fatal)."""
+    llm = FakeLLM(sql="SELECT 1", answer="ok")
+    caps = SearchOnlyFailureCapabilities()
+    state = await _run(AgentServices(llm=llm, capabilities=caps, max_attempts=3))
+
+    assert state["status"] == AgentStatus.COMPLETED
+    assert state["attempts"] == 1  # no retrieval retry needed
+    # The failure is recorded and visible in the trace, but not fatal.
+    assert state["retrieval_errors"] == ["search_metadata: Tool error: metadata index unavailable"]
+    assert state["schema_unavailable"] is False
+    # The schema was still retrieved and used for SQL generation.
+    assert state["schema"]
+    assert [n for n, _ in caps.calls].count("list_tables") == 1
 
 
 @pytest.mark.asyncio

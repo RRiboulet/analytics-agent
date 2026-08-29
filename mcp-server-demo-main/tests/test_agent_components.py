@@ -78,6 +78,33 @@ async def test_run_agent_surfaces_retrieval_error(monkeypatch) -> None:
     assert "search_metadata" in res.error
 
 
+@pytest.mark.asyncio
+async def test_run_agent_degrades_gracefully_when_search_fails(monkeypatch) -> None:
+    """A search_metadata-only failure completes schema-only and is not an error."""
+
+    class SearchFailsDiscovery:
+        async def call_tool(self, name, args=None):  # type: ignore[no-untyped-def]
+            if name == "search_metadata":
+                return {
+                    "valid": False,
+                    "message": "Tool error: metadata index unavailable",
+                    "entries": [],
+                }
+            if name == "query":
+                return {"valid": True, "message": "ok", "entries": [{"n": 1}]}
+            return {"valid": True, "message": "ok", "entries": []}
+
+        async def close(self):  # type: ignore[no-untyped-def]
+            pass
+
+    monkeypatch.setattr(entrypoint, "LLMClient", FakeLLM)
+    monkeypatch.setattr(entrypoint, "MCPCapabilities", SearchFailsDiscovery)
+    res = await entrypoint.run_agent("Q")
+    assert res.status == "completed"
+    assert res.answer is not None
+    assert res.error is None  # degradation is not an error for the caller
+
+
 def test_main_cli_json_output(monkeypatch, capsys) -> None:
     async def fake_run(_question):  # type: ignore[no-untyped-def]
         return entrypoint.RunResult(

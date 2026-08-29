@@ -44,11 +44,16 @@ class AgentState(TypedDict, total=False):
     # fail cleanly instead of crashing the run with a raw httpx traceback.
     llm_error: str
     # Per-tool failures during metadata retrieval (transport errors, unknown
-    # tools, or masked infrastructure failures returned as valid=false). A
-    # non-empty list routes the run back into retrieval (bounded retry) instead
-    # of generating SQL from a possibly empty schema; an empty list on retry
-    # means the retry targets SQL generation, not retrieval.
+    # tools, or masked infrastructure failures returned as valid=false).
+    # Recorded for observability and surfaced in traces. Only failures of the
+    # schema-discovery tools (list_tables / get_relationships) make the schema
+    # untrustworthy; a search_metadata failure alone degrades the run to
+    # schema-only retrieval instead of failing it.
     retrieval_errors: list[str]
+    # True when list_tables or get_relationships failed: there is no grounded
+    # schema to generate SQL from. Routes the run back into retrieval (bounded)
+    # or fails it; an SQL retry leaves it False so the retry targets generation.
+    schema_unavailable: bool
     # Query results and the analysis/answer derived from them.
     result: list[dict[str, Any]]
     analysis: str

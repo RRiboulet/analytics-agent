@@ -83,9 +83,14 @@ async def run_agent(question: str) -> RunResult:
             state.get("llm_error")
             or state.get("query_error")
             or state.get("validation_error")
-            # Completed runs always have an empty list (a failed retrieval is
-            # retried or fails the run), so this only ever carries an error.
-            or ((state.get("retrieval_errors") or [None])[0])
+            # Retrieval errors only fail the run when the schema itself is
+            # unavailable; a degraded search_metadata failure on a completed
+            # run is visible in the trace but is not an error for the caller.
+            or (
+                (state.get("retrieval_errors") or [None])[0]
+                if state.get("schema_unavailable")
+                else None
+            )
         ),
     )
 

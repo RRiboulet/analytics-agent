@@ -654,11 +654,15 @@ Subsequent hardening (silent MCP discovery failures):
 * Discovery-call validity is no longer silently degraded to empty schema/metadata:
   `AgentState.retrieval_errors` records per-tool `valid=false` results (masked
   infrastructure errors, unknown tools), making them visible in the trace.
-* A retrieval pass with errors is retried (bounded by `AGENT_MAX_ATTEMPTS`) and
-  the shared `retry` node now re-runs *retrieval* for retrieval errors while
-  SQL retries still go straight back to generation; persistent discovery
+* Failure policy: only a broken *schema* discovery (`list_tables` /
+  `get_relationships`) makes the schema untrustworthy — it retries (bounded by
+  `AGENT_MAX_ATTEMPTS`) and the shared `retry` node re-runs *retrieval* for it,
+  while SQL retries still go straight back to generation; persistent schema
   failure ends the run with `failed` and the tool error surfaced in the CLI
-  output. Exceptions from `call_tool` keep propagating (unchanged behavior).
+  output. A `search_metadata` failure alone degrades the run to schema-only
+  retrieval: the failure is recorded in `retrieval_errors`/trace but the run
+  proceeds and is not an error for the caller. Exceptions from `call_tool`
+  keep propagating (unchanged behavior).
 * `.env` (if present) is loaded by the tracer via `find_dotenv(usecwd=True)`,
   matching pydantic Settings resolution; unit tests never export telemetry
   (autouse conftest fixture strips `LANGFUSE_*` keys).
