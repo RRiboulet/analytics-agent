@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import httpx
+from langchain_core.runnables import RunnableLambda
 
 from app.config import get_settings
 
@@ -145,11 +146,33 @@ class LLMClient:
                 "\n\nThe previous attempt failed with this error. Correct your SQL to "
                 f"resolve it — use only real columns/tables from the schema:\n{prior_error}"
             )
-        return await self._complete(_SQL_SYSTEM, user, max_tokens=self.max_tokens)
+        return await self._traced_complete(
+            "generate_sql", user, system=_SQL_SYSTEM, max_tokens=self.max_tokens
+        )
 
     async def generate_answer(self, question: str, sql: str, result: str) -> str:
         user = f"Question:\n{question}\n\nSQL executed:\n{sql}\n\nRows returned:\n{result}"
-        return await self._complete(_ANSWER_SYSTEM, user, max_tokens=self.answer_max_tokens)
+        return await self._traced_complete(
+            "generate_answer", user, system=_ANSWER_SYSTEM, max_tokens=self.answer_max_tokens
+        )
+
+    async def _traced_complete(
+        self, run_name: str, user: str, *, system: str, max_tokens: int | None
+    ) -> str:
+        """Run one completion as a named, observable nested run.
+
+        The raw ``httpx`` completion is wrapped in a ``RunnableLambda`` so the
+        LLM call (prompt in, completion out) shows up in the Langfuse trace
+        instead of being invisible behind a plain HTTP request. When invoked
+        inside a LangGraph node the parent's callback context propagates
+        automatically; with no active tracing the wrapper is a no-op pass-
+        through and behaviour is identical to a direct call.
+        """
+
+        async def _invoke(prompt: str) -> str:
+            return await self._complete(system, prompt, max_tokens=max_tokens)
+
+        return await RunnableLambda(_invoke, name=run_name).ainvoke(user)
 
 
 @dataclass

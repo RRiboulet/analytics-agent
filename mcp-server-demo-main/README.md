@@ -115,8 +115,15 @@ the whole SQL-generation budget on chain-of-thought before the answer.
 
 Because the database is reached only through the read-only MCP tools, the agent cannot
 mutate the data. Tracing is fail-open: set `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`/
-`LANGFUSE_HOST` in the environment to enable Langfuse traces; otherwise runs are
-un-instrumented.
+`LANGFUSE_HOST` in the environment (or in `.env`) to enable Langfuse traces; otherwise
+runs are un-instrumented. **Note:** the current setup traces to **Langfuse Cloud**
+(`https://cloud.langfuse.com`, free tier) — trace payloads (questions, retrieved
+metadata, generated SQL, query results) are sent to Langfuse's SaaS. To keep trace
+data local instead, point `LANGFUSE_HOST` at a self-hosted Langfuse instance; no code
+change is required. When enabled, each run produces one trace (tagged
+`analytics-agent`, with the question as metadata) covering every graph node with its
+state transitions, both LLM calls (`generate_sql` / `generate_answer`), each MCP tool
+call with arguments and result, retries/errors, and the final answer.
 
 
 ## Test the MCP server step by step

@@ -16,7 +16,7 @@ from app.agent.capabilities import MCPCapabilities
 from app.agent.graph import AgentServices, build_graph
 from app.agent.llm import LLMClient
 from app.agent.state import AgentState
-from app.agent.tracing import AgentTracer, callbacks_for
+from app.agent.tracing import AgentTracer
 from app.config import get_settings
 
 
@@ -45,8 +45,10 @@ async def _run_question(
         llm=llm, capabilities=capabilities, max_attempts=max_attempts, max_rows=max_rows
     )
     graph = build_graph(services)
-    callbacks = callbacks_for(tracer)
-    config = {"callbacks": callbacks} if callbacks is not None else None
+    # Fail-open observability: with Langfuse credentials the whole run is
+    # traced (nodes, LLM calls, MCP tool calls, retries, final answer);
+    # without them the graph is invoked with no config at all.
+    config = tracer.run_config(question) if tracer is not None else None
     return await graph.ainvoke(
         {"question": question, "status": "planning", "attempts": 0}, config=config
     )
@@ -69,6 +71,8 @@ async def run_agent(question: str) -> RunResult:
         )
     finally:
         await capabilities.close()
+        # Export what was collected even if the run crashed mid-flight.
+        tracer.flush()
     return RunResult(
         answer=state.get("answer"),
         status=state.get("status"),

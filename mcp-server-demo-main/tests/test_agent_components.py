@@ -4,12 +4,17 @@ import json
 import subprocess
 import sys as _sys
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel
 
 from app.agent import entrypoint
 from app.agent.capabilities import MCPCapabilities, parse_tool_result
+from app.agent.graph import AgentServices, build_graph
 from app.agent.llm import LLMClient, LLMError, _request_payload
 from app.agent.tracing import AgentTracer, callbacks_for
 
@@ -224,6 +229,101 @@ def test_request_payload_shape() -> None:
 
 
 # ---------------------------------------------------------------------------
+# End-to-end observability: nested runs are visible in the graph trace
+# ---------------------------------------------------------------------------
+
+
+class _TracedToolArgs(BaseModel):
+    sql: str = ""
+
+
+class TracedStubCapabilities:
+    """Stub whose call_tool goes through a real langchain StructuredTool.
+
+    This mirrors MCPCapabilities, whose tools are langchain runnables, so a
+    spy callback attached to the graph config must see each MCP tool call.
+    """
+
+    def __init__(self) -> None:
+        async def search(**_kw: object) -> dict:
+            return {"valid": True, "message": "ok", "entries": []}
+
+        async def query(**_kw: object) -> str:
+            return json.dumps({"valid": True, "message": "ok", "entries": [{"n": 1}]})
+
+        search.__doc__ = "search metadata"
+        query.__doc__ = "run query"
+        self._tools = {
+            "search_metadata": StructuredTool.from_function(
+                coroutine=search, name="search_metadata", args_schema=_TracedToolArgs
+            ),
+            "list_tables": StructuredTool.from_function(
+                coroutine=search, name="list_tables", args_schema=_TracedToolArgs
+            ),
+            "get_relationships": StructuredTool.from_function(
+                coroutine=search, name="get_relationships", args_schema=_TracedToolArgs
+            ),
+            "query": StructuredTool.from_function(
+                coroutine=query, name="query", args_schema=_TracedToolArgs
+            ),
+        }
+
+    async def call_tool(self, name: str, args: dict | None = None) -> dict:
+        result = await self._tools[name].ainvoke(args or {})
+        if name == "query":
+            # Mirror the MCP adapter's content-block shape for parse_tool_result.
+            return parse_tool_result([{"type": "text", "text": str(result)}])
+        return {"valid": True, "message": "ok", "entries": []}
+
+    async def close(self) -> None:
+        pass
+
+
+class RunSpyHandler(BaseCallbackHandler):
+    """Records nested run names visible through the callback mechanism."""
+
+    def __init__(self) -> None:
+        self.chain_runs: list[str | None] = []
+
+    def on_chain_start(
+        self, serialized: Any, inputs: Any, *, run_id: Any, name: str | None = None, **kw: Any
+    ) -> None:
+        self.chain_runs.append(name)
+
+
+@pytest.mark.asyncio
+async def test_graph_trace_contains_llm_runs_and_tool_calls() -> None:
+    """M5: LLM calls and MCP tool calls appear as nested runs in the trace.
+
+    Uses the real LLMClient against a stubbed transport and a stub capabilities
+    whose tools are real runnables, with a spy handler in the graph config.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": "SELECT 1"}}]})
+
+    llm = LLMClient(
+        base_url="http://llm/v1",
+        model="gemma",
+        timeout_seconds=5,
+        transport=httpx.MockTransport(handler),
+    )
+    services = AgentServices(
+        llm=llm, capabilities=TracedStubCapabilities(), max_attempts=3, max_rows=10
+    )
+    graph = build_graph(services)
+    spy = RunSpyHandler()
+    state = await graph.ainvoke(
+        {"question": "q", "status": "planning", "attempts": 0}, config={"callbacks": [spy]}
+    )
+    assert state["status"] == "completed"
+    # The node runnable and the nested LLM run share the name 'generate_sql';
+    # it must appear at least twice (node + nested LLM call).
+    assert spy.chain_runs.count("generate_sql") >= 2
+    assert "generate_answer" in spy.chain_runs  # nested LLM call
+
+
+# ---------------------------------------------------------------------------
 # LLMClient failure translation (the httpx.ReadTimeout crash reported in M4)
 # ---------------------------------------------------------------------------
 
@@ -349,13 +449,103 @@ async def test_llm_client_uses_separate_answer_token_cap() -> None:
 
 def test_tracer_disabled_and_callbacks_for(monkeypatch) -> None:
     monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
     assert AgentTracer().callbacks() is None
     assert callbacks_for(None) is None
     assert callbacks_for(AgentTracer()) is None
 
 
+def test_tracer_run_config_disabled(monkeypatch) -> None:
+    """Without credentials the run config is None (un-instrumented run)."""
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    assert AgentTracer().run_config("What?") is None
+
+
+def test_tracer_requires_complete_credentials(monkeypatch) -> None:
+    """A public key alone cannot export traces, so it must not enable tracing."""
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    tracer = AgentTracer()
+    assert tracer.callbacks() is None
+    assert tracer.run_config("What?") is None
+
+
 def test_tracer_enabled_gives_callback(monkeypatch) -> None:
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
     monkeypatch.setattr("langfuse.langchain.CallbackHandler", lambda: "fake-handler")
-    assert AgentTracer().callbacks() == ["fake-handler"]
-    assert callbacks_for(AgentTracer()) == ["fake-handler"]
+    tracer = AgentTracer()
+    assert tracer.callbacks() == ["fake-handler"]
+    assert callbacks_for(tracer) == ["fake-handler"]
+
+
+def test_tracer_run_config_shape(monkeypatch) -> None:
+    """Enabled tracing yields callbacks + tags + question metadata in one config."""
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+    monkeypatch.setattr("langfuse.langchain.CallbackHandler", lambda: "fake-handler")
+    config = AgentTracer().run_config("Revenue by category?")
+    assert config is not None
+    assert config["callbacks"] == ["fake-handler"]
+    assert "analytics-agent" in config["tags"]
+    assert config["metadata"] == {"question": "Revenue by category?"}
+
+
+def test_tracer_reuses_handler_across_calls(monkeypatch) -> None:
+    """The same handler instance serves the run config and the final flush."""
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+    monkeypatch.setattr("langfuse.langchain.CallbackHandler", object)
+    tracer = AgentTracer()
+    first = tracer.callbacks()
+    assert tracer.callbacks() == first  # cached, not a second instance
+    assert tracer.run_config("Q")["callbacks"] == first
+
+
+def test_tracer_survives_handler_init_failure(monkeypatch) -> None:
+    """Fail-open: a raising handler constructor disables tracing, never breaks the run."""
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+
+    def boom() -> None:
+        raise RuntimeError("langfuse misconfigured")
+
+    monkeypatch.setattr("langfuse.langchain.CallbackHandler", boom)
+    tracer = AgentTracer()
+    assert tracer.callbacks() is None
+    assert tracer.run_config("What?") is None
+    tracer.flush()  # must be a safe no-op
+
+
+def test_tracer_flush_disabled_is_noop() -> None:
+    AgentTracer().flush()
+
+
+def test_tracer_flush_swallows_handler_errors(monkeypatch) -> None:
+    class BadHandler:
+        def flush(self) -> None:
+            raise RuntimeError("export failed")
+
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+    monkeypatch.setattr("langfuse.langchain.CallbackHandler", BadHandler)
+    tracer = AgentTracer()
+    tracer.callbacks()  # handler created (fails open if it raised)
+    tracer.flush()  # must not raise even though the handler's flush fails
+
+
+def test_tracer_flushes_created_handler(monkeypatch) -> None:
+    flushed: list[bool] = []
+
+    class GoodHandler:
+        def flush(self) -> None:
+            flushed.append(True)
+
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+    monkeypatch.setattr("langfuse.langchain.CallbackHandler", GoodHandler)
+    tracer = AgentTracer()
+    tracer.callbacks()
+    tracer.flush()
+    assert flushed == [True]

@@ -616,14 +616,50 @@ LLM; SQL/answer quality depends on the served model).
 
 ---
 
-## M5 — LangSmith Observability
+## M5 — Observability (Langfuse)
 
-Status: pending
+Status: complete
 
 Instrument the complete agent workflow.
 
 Success criterion:
 An individual agent run can be inspected end-to-end, including metadata retrieval, LLM calls, generated SQL, MCP calls, retries and final answer.
+
+Implemented (D005: Langfuse — currently Langfuse Cloud, see D005; the original
+"LangSmith" milestone title was superseded by D005 during M4):
+
+* `app/agent/tracing.py` — `AgentTracer` now builds the full graph-invoke config:
+  callbacks + `analytics-agent`/`v2` tags + the question as trace metadata
+  (`run_config(question)`). Both `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are
+  required to enable (a public key alone can never export), and any tracer setup
+  failure disables tracing for that run instead of breaking it — the fail-open
+  property from M4 is now actually robust (handler construction is guarded).
+* LLM calls are visible in traces: `LLMClient` runs both completions through a named
+  nested runnable (`generate_sql` / `generate_answer`) so prompt-in/completion-out
+  appear under the graph nodes instead of being invisible behind raw `httpx`.
+* MCP tool calls are captured through langchain-core callback-context propagation
+  into `MCPCapabilities`' runnable tools (verified by a spy-handler test); no
+  changes to the MCP boundary itself.
+* Graph-node spans carry the state transitions, so generated SQL, retrieved
+  metadata, validation/execution errors, retries and the final answer are all
+  inspectable per node.
+* `entrypoint` attaches the run config and explicitly flushes the handler after
+  every run (including failed ones).
+* Tests: tracer enabled/disabled/partial-credentials/init-failure/flush behavior,
+  plus an end-to-end test asserting the graph trace contains the nested LLM runs
+  and MCP tool calls. Fail-open semantics are covered.
+
+Verified:
+
+* `uv run pytest` -> all passed (60 pre-M5 unit/component + new tracing tests).
+* `ruff format --check .` and `ruff check .` clean.
+* Live behavior validated with the spy-callback harness (no Langfuse backend needed):
+  trace contains `LangGraph` -> nodes -> `generate_sql` (nested LLM run) ->
+  tool calls -> `generate_answer`.
+
+Note: end-to-end export correctness against a running Langfuse server remains a
+manual verification step (unit tests use spies/stubs by design; the tracer is
+fail-open and never gates a run).
 
 ---
 
@@ -705,14 +741,20 @@ Reason: The analytics workflow requires explicit state, controlled iteration, re
 
 ### D005 — Observability
 
-Decision: Langfuse (self-hosted, free) as the V2 tracer, in the original
-LangSmith direction.
+Decision: Langfuse as the V2 tracer, in the original LangSmith direction.
 
 Reason: Agent traces, tool calls, failures and evaluation are core to
 understanding and improving the system. LangSmith's free developer tier requires
 an account/API key; Langfuse is self-hostable at no cost and integrates with
 LangGraph via a langchain callback. The M4 tracer is fail-open so runs are never
 gated on telemetry.
+
+Current deployment (updated during M5): **Langfuse Cloud** (`https://cloud.langfuse.com`,
+free tier). Consequence: trace payloads — analytical questions, retrieved
+metadata, generated SQL and Olist query results — are sent to Langfuse's SaaS.
+This is accepted for development; if that ever becomes unacceptable, the same
+tracer points at a self-hosted Langfuse instance by changing `LANGFUSE_HOST` —
+no code change needed.
 
 ### D007 — Agent LLM
 
@@ -756,7 +798,7 @@ These should be resolved during implementation rather than prematurely.
 
 Current milestone:
 
-**M4 — First LangGraph agent**
+**M5 — Observability (Langfuse)**
 
 Completed:
 
@@ -778,6 +820,7 @@ Next:
 * [x] **M2 — MCP analytics capabilities** — `get_relationships`, `get_sample_rows`, `get_table_statistics`, `get_column_statistics`
 * [x] **M3 — Metadata + pgvector** — metadata docs, embeddings (fastembed), pgvector storage, `search_metadata`, seeding
 * [x] **M4 — First LangGraph agent** — standalone `app/agent/`, read-only MCP boundary, retry recovery, bounded attempts, Langfuse fail-open tracing.
+* [x] **M5 — Observability (Langfuse)** — end-to-end run traces: nodes/state, LLM calls, MCP tool calls, retries, final answer; fail-open, flush-on-exit.
 
 # 18. M1 Status & Decisions
 
