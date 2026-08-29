@@ -16,7 +16,8 @@ from app.agent import entrypoint
 from app.agent.capabilities import MCPCapabilities, parse_tool_result
 from app.agent.graph import AgentServices, build_graph
 from app.agent.llm import FakeLLM, LLMClient, LLMError, _request_payload
-from app.agent.tracing import AgentTracer, callbacks_for
+from app.agent.tracing import PROJECT_ENV_PATH, AgentTracer, callbacks_for
+from app.config import Settings
 
 # ---------------------------------------------------------------------------
 # Entrypoint CLI / run_agent
@@ -584,6 +585,24 @@ def test_tracer_flush_swallows_handler_errors(monkeypatch) -> None:
     tracer = AgentTracer()
     tracer.callbacks()  # handler created (fails open if it raised)
     tracer.flush()  # must not raise even though the handler's flush fails
+
+
+def test_tracer_env_file_resolves_to_project_root() -> None:
+    """The .env is located via the module path, not the CWD.
+
+    Regression test: launching `python -m app.agent` from outside the project
+    directory used to silently find no .env (CWD-based lookup) and disable
+    tracing while the run itself still worked on default settings.
+    """
+    assert Path(__file__).resolve().parents[1] / ".env" == PROJECT_ENV_PATH
+
+
+def test_settings_env_file_resolves_to_project_root() -> None:
+    """Settings resolve .env from the project root, consistent with the tracer."""
+
+    assert Path(Settings.model_config["env_file"]) == (  # type: ignore[arg-type]
+        Path(__file__).resolve().parents[1] / ".env"
+    )
 
 
 def test_tracer_flushes_created_handler(monkeypatch) -> None:

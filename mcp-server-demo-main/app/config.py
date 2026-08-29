@@ -1,11 +1,20 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# .env resolved from the project root (this file lives in app/), not the
+# CWD: the package is installed in the venv, so the app runs correctly from
+# any directory, and a CWD-relative env_file would silently ignore the
+# project configuration when launched elsewhere.
+_PROJECT_ENV = Path(__file__).resolve().parents[1] / ".env"
+
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=_PROJECT_ENV, env_file_encoding="utf-8", extra="ignore"
+    )
 
     database_url: str = Field(
         default="postgresql://olist_readonly:olist_readonly@localhost:5432/olist",

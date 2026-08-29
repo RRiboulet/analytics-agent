@@ -23,16 +23,21 @@ Within an active trace the following are captured end-to-end:
 
 import os
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
-from dotenv import find_dotenv, load_dotenv
+from dotenv import load_dotenv
 
 # The tracer reads the environment directly (not via pydantic Settings), so
-# load the project .env if present. Resolved from the working directory (and
-# upwards), matching how pydantic Settings resolves env_file=".env".
-# Non-overriding by default: real shell environment variables keep precedence,
-# and this is a no-op when no .env exists or the keys are commented out.
-load_dotenv(find_dotenv(usecwd=True))
+# load the project .env. The path is resolved from this module's location
+# (project root), NOT the current working directory: the app package is
+# installed in the venv, so `python -m app.agent` works from anywhere, and a
+# CWD-based lookup silently found no .env (disabling tracing) when launched
+# outside the project directory. Non-overriding by default: real shell
+# environment variables keep precedence, and this is a no-op when the file
+# does not exist or has the keys commented out.
+PROJECT_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+load_dotenv(PROJECT_ENV_PATH)
 
 LANGFUSE_PUBLIC_KEY = "LANGFUSE_PUBLIC_KEY"
 LANGFUSE_SECRET_KEY = "LANGFUSE_SECRET_KEY"
