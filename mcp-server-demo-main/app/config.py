@@ -62,13 +62,20 @@ class Settings(BaseSettings):
     # llama.cpp exposes the model under the name given by --alias, not the GGUF
     # filename. The server below is started with --alias gemma-4.
     llm_model: str = Field(default="gemma-4", validation_alias="LLM_MODEL")
-    llm_timeout_seconds: float = Field(default=120.0, validation_alias="LLM_TIMEOUT_SECONDS", gt=0)
-    # Caps each generation's output tokens. This matters on servers started with
+    llm_timeout_seconds: float = Field(default=300.0, validation_alias="LLM_TIMEOUT_SECONDS", gt=0)
+    # Cap per-generation output tokens. This matters on servers started with
     # --reasoning on, where the model spends tokens on chain-of-thought before
     # emitting the final SQL/answer; without a cap the reasoning phase can crowd
     # out the final output and yield empty/truncated text.
     llm_max_tokens: int | None = Field(
         default=4096, validation_alias="LLM_MAX_TOKENS", ge=1, le=32768
+    )
+    # Separate, tighter cap for the final answer step. The SQL step may need
+    # room for chain-of-thought; the answer step only needs a concise
+    # evidence-based summary, and a small cap bounds the worst-case wall time
+    # on slow local models.
+    llm_answer_max_tokens: int | None = Field(
+        default=512, validation_alias="LLM_ANSWER_MAX_TOKENS", ge=1, le=32768
     )
     # Maximum regeneration attempts before the agent fails out (no infinite
     # loops when SQL stays invalid or errors).

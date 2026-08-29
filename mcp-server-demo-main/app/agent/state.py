@@ -39,6 +39,10 @@ class AgentState(TypedDict, total=False):
     bounded_sql: str
     validation_error: str
     query_error: str
+    # Set when the model call itself failed (timeout / transport / HTTP /
+    # malformed response). LLM failures retry up to the attempt limit and then
+    # fail cleanly instead of crashing the run with a raw httpx traceback.
+    llm_error: str
     # Query results and the analysis/answer derived from them.
     result: list[dict[str, Any]]
     analysis: str

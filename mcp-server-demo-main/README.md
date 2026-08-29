@@ -103,6 +103,16 @@ A plain (non-JSON) summary is printed without `--json`. The agent:
 5. recovers from invalid/erroring queries up to `AGENT_MAX_ATTEMPTS` (default 3);
 6. produces an evidence-grounded answer.
 
+Model failures (timeouts, transport/HTTP errors, malformed responses) are
+handled the same way: the step is retried up to `AGENT_MAX_ATTEMPTS` and then
+the run fails cleanly with a `failed` status and the error message in the JSON
+output — a slow local model can no longer crash the CLI with an `httpx`
+traceback. `LLM_TIMEOUT_SECONDS` (default 300) is the per-call budget; local
+CPU-served models are slow (~1-3 tokens/s), so a single generation takes
+minutes. The final answer step has its own, tighter token cap
+(`LLM_ANSWER_MAX_TOKENS`, default 512) so a `--reasoning on` model cannot burn
+the whole SQL-generation budget on chain-of-thought before the answer.
+
 Because the database is reached only through the read-only MCP tools, the agent cannot
 mutate the data. Tracing is fail-open: set `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`/
 `LANGFUSE_HOST` in the environment to enable Langfuse traces; otherwise runs are

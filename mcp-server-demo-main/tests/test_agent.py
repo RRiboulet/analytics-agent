@@ -11,7 +11,7 @@ import pytest
 from app.agent.capabilities import parse_tool_result
 from app.agent.entrypoint import _run_question
 from app.agent.graph import AgentServices, build_graph
-from app.agent.llm import FakeLLM
+from app.agent.llm import FakeLLM, LLMError
 from app.agent.state import AgentStatus
 
 
@@ -223,3 +223,74 @@ async def test_transport_failure_propagates_never_fabricates() -> None:
     llm = FakeLLM(sql="SELECT 1", answer="should not be used")
     with pytest.raises(ConnectionError):
         await _run(AgentServices(llm=llm, capabilities=BoomCapabilities(), max_attempts=3))
+
+
+class FlakyLLM(FakeLLM):
+    """FakeLLM that raises LLMError for the first `fail_sql`/`fail_answer` calls.
+
+    Lets tests exercise the LLM-failure recovery path (the httpx.ReadTimeout
+    crash) deterministically: the graph must retry up to the attempt limit and
+    fail cleanly instead of crashing the run.
+    """
+
+    def __init__(self, *, fail_sql: int = 0, fail_answer: int = 0, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.fail_sql = fail_sql
+        self.fail_answer = fail_answer
+
+    async def generate_sql(
+        self, question: str, metadata: str, schema: str, *, prior_error: str | None = None
+    ) -> str:
+        if self.fail_sql > 0:
+            self.fail_sql -= 1
+            raise LLMError("LLM request timed out after 300s")
+        return await super().generate_sql(question, metadata, schema, prior_error=prior_error)
+
+    async def generate_answer(self, question: str, sql: str, result: str) -> str:
+        if self.fail_answer > 0:
+            self.fail_answer -= 1
+            raise LLMError("LLM request timed out after 300s")
+        return await super().generate_answer(question, sql, result)
+
+
+@pytest.mark.asyncio
+async def test_retries_after_llm_sql_failure_then_succeeds() -> None:
+    llm = FlakyLLM(fail_sql=1, sql="SELECT 1", answer="ok")
+    state = await _run(AgentServices(llm=llm, capabilities=StubCapabilities(), max_attempts=3))
+
+    assert state["status"] == AgentStatus.COMPLETED
+    assert state["attempts"] == 2
+    assert state.get("llm_error") is None
+
+
+@pytest.mark.asyncio
+async def test_fails_cleanly_after_persistent_llm_sql_failure() -> None:
+    llm = FlakyLLM(fail_sql=99, sql="SELECT 1", answer="should not be used")
+    state = await _run(AgentServices(llm=llm, capabilities=StubCapabilities(), max_attempts=2))
+
+    assert state["status"] == AgentStatus.FAILED
+    assert state["attempts"] == 2
+    assert "timed out" in state["llm_error"]
+    # Never fabricate an answer when the model could not be reached.
+    assert state.get("answer") is None
+
+
+@pytest.mark.asyncio
+async def test_retries_after_llm_answer_failure_then_succeeds() -> None:
+    llm = FlakyLLM(fail_answer=1, sql="SELECT 1", answer="ok")
+    state = await _run(AgentServices(llm=llm, capabilities=StubCapabilities(), max_attempts=3))
+
+    assert state["status"] == AgentStatus.COMPLETED
+    assert state["attempts"] == 2
+    assert state.get("llm_error") is None
+
+
+@pytest.mark.asyncio
+async def test_fails_cleanly_after_persistent_llm_answer_failure() -> None:
+    llm = FlakyLLM(fail_answer=99, sql="SELECT 1", answer="should not be used")
+    state = await _run(AgentServices(llm=llm, capabilities=StubCapabilities(), max_attempts=2))
+
+    assert state["status"] == AgentStatus.FAILED
+    assert state["attempts"] == 2
+    assert "timed out" in state["llm_error"]
+    assert state.get("answer") is None

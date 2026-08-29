@@ -29,6 +29,7 @@ class RunResult:
     sql: str | None
     attempts: int
     state: AgentState
+    error: str | None = None
 
 
 async def _run_question(
@@ -74,6 +75,7 @@ async def run_agent(question: str) -> RunResult:
         sql=state.get("bounded_sql") or state.get("sql"),
         attempts=state.get("attempts", 0),
         state=state,
+        error=(state.get("llm_error") or state.get("query_error") or state.get("validation_error")),
     )
 
 
@@ -97,6 +99,7 @@ def main(argv: list[str] | None = None) -> None:
                     "status": result.status,
                     "sql": result.sql,
                     "attempts": result.attempts,
+                    "error": result.error,
                 },
                 indent=2,
             )
@@ -104,6 +107,8 @@ def main(argv: list[str] | None = None) -> None:
         return
     print(f"Status: {result.status}")
     print(f"Attempts: {result.attempts}")
+    if result.error:
+        print(f"Error: {result.error}")
     if result.sql:
         print(f"SQL: {result.sql}")
     print(f"Answer: {result.answer}")

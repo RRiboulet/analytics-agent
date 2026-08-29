@@ -18,7 +18,7 @@ from typing import Any
 from langgraph.graph import END, START, StateGraph
 
 from app.agent.capabilities import Capabilities
-from app.agent.llm import LLM
+from app.agent.llm import LLM, LLMError
 from app.agent.state import AgentState, AgentStatus
 from app.sql_safety import UnsafeQueryError, validate_and_bound_query
 
@@ -114,14 +114,26 @@ def build_graph(services: AgentServices) -> Any:
         # blindly repeating the same query. Otherwise it regenerates identically
         # and burns the attempt budget (PLAN item 7: recover from errors).
         prior_error = state.get("query_error") or state.get("validation_error")
-        candidate = await services.llm.generate_sql(
-            state["question"], metadata_text, schema_text, prior_error=prior_error
-        )
+        try:
+            candidate = await services.llm.generate_sql(
+                state["question"], metadata_text, schema_text, prior_error=prior_error
+            )
+        except LLMError as error:
+            # The model call failed (timeout/transport/HTTP). This is a
+            # transient, retryable step — the graph recovers up to the attempt
+            # limit and fails cleanly afterwards instead of crashing the run.
+            return {
+                "sql": "",
+                "llm_error": str(error),
+                "validation_error": None,
+                "query_error": None,
+            }
         return {
             "sql": candidate,
             "status": AgentStatus.VALIDATING_SQL,
             "validation_error": None,
             "query_error": None,
+            "llm_error": None,
         }
 
     async def _validate(state: AgentState) -> dict[str, Any]:
@@ -146,10 +158,15 @@ def build_graph(services: AgentServices) -> Any:
 
     async def _analyze(state: AgentState) -> dict[str, Any]:
         result_text = json.dumps(state.get("result", []), default=str)
-        answer = await services.llm.generate_answer(
-            state["question"], state.get("bounded_sql", ""), result_text
-        )
-        return {"answer": answer, "status": AgentStatus.COMPLETED}
+        try:
+            answer = await services.llm.generate_answer(
+                state["question"], state.get("bounded_sql", ""), result_text
+            )
+        except LLMError as error:
+            # Never fabricate: on a model failure the answer stays unset and the
+            # run retries (bounded) or fails cleanly with the error recorded.
+            return {"answer": None, "llm_error": str(error)}
+        return {"answer": answer, "status": AgentStatus.COMPLETED, "llm_error": None}
 
     async def _retry(state: AgentState) -> dict[str, Any]:
         return {"attempts": state.get("attempts", 0) + 1, "status": AgentStatus.RETRYING}
@@ -167,6 +184,16 @@ def build_graph(services: AgentServices) -> Any:
             return RETRY_EDGE if state.get("attempts", 1) < services.max_attempts else FAIL_EDGE
         return ANALYZE_EDGE
 
+    def _route_after_generate(state: AgentState) -> str:
+        if state.get("llm_error"):
+            return RETRY_EDGE if state.get("attempts", 1) < services.max_attempts else FAIL_EDGE
+        return VALIDATE
+
+    def _route_after_analyze(state: AgentState) -> str:
+        if state.get("llm_error"):
+            return RETRY_EDGE if state.get("attempts", 1) < services.max_attempts else FAIL_EDGE
+        return END
+
     g = StateGraph(AgentState)
     g.add_node(PLAN, _plan)
     g.add_node(RETRIEVE, _retrieve)
@@ -180,15 +207,22 @@ def build_graph(services: AgentServices) -> Any:
     g.add_edge(START, PLAN)
     g.add_edge(PLAN, RETRIEVE)
     g.add_edge(RETRIEVE, GENERATE)
-    g.add_edge(GENERATE, VALIDATE)
+    # LLM failures during SQL generation are recoverable: retry (bounded) or
+    # fail cleanly instead of crashing the run with a raw httpx traceback.
+    g.add_conditional_edges(
+        GENERATE, _route_after_generate, {VALIDATE: VALIDATE, RETRY_EDGE: RETRY, FAIL_EDGE: FAIL}
+    )
     g.add_conditional_edges(
         VALIDATE, _route_after_validate, {EXECUTE_EDGE: EXECUTE, RETRY_EDGE: RETRY, FAIL_EDGE: FAIL}
     )
     g.add_conditional_edges(
         EXECUTE, _route_after_execute, {RETRY_EDGE: RETRY, FAIL_EDGE: FAIL, ANALYZE_EDGE: ANALYZE}
     )
+    # Same recovery for an LLM failure during the final answer step.
+    g.add_conditional_edges(
+        ANALYZE, _route_after_analyze, {END: END, RETRY_EDGE: RETRY, FAIL_EDGE: FAIL}
+    )
     g.add_edge(RETRY, GENERATE)
-    g.add_edge(ANALYZE, END)
     g.add_edge(FAIL, END)
 
     return g.compile()

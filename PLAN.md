@@ -597,6 +597,19 @@ Verified:
   test but only run at process entry.
 * Full gate clean: `ruff format --check .` and `ruff check .` pass.
 
+Subsequent hardening (agent LLM failures — the reported `httpx.ReadTimeout`):
+
+* LLM calls now raise a typed `LLMError`, and the graph recovers from model
+  failures (timeout/transport/HTTP/parse) exactly like it already does for SQL
+  errors: bounded retry up to `AGENT_MAX_ATTEMPTS`, then a clean `failed`
+  status with the error surfaced in the CLI output. A slow local model no
+  longer crashes the run with a raw `httpx.ReadTimeout` traceback, and the
+  agent never fabricates an answer on model failure.
+* Defaults tuned to the reference local model (CPU-bound, ~1-3 tok/s):
+  `LLM_TIMEOUT_SECONDS` 120 → 300 per call, plus a separate
+  `LLM_ANSWER_MAX_TOKENS=512` cap so a `--reasoning on` model cannot spend the
+  4096-token SQL-generation budget on chain-of-thought before the answer.
+
 Success criterion met: the agent answers a representative set of analytical
 questions against the realistic database (validated live with a deterministic
 LLM; SQL/answer quality depends on the served model).

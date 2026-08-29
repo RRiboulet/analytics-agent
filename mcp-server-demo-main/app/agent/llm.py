@@ -19,6 +19,16 @@ import httpx
 
 from app.config import get_settings
 
+
+class LLMError(Exception):
+    """A model call failed (timeout, transport, HTTP status, or bad response).
+
+    Raised instead of a raw ``httpx`` exception so the agent graph can treat
+    LLM failures as a recoverable, bounded-retry step and surface a clean
+    ``failed`` result instead of crashing the run with a traceback.
+    """
+
+
 _SQL_SYSTEM = (
     "You are an analytics SQL assistant for the Olist e-commerce database. "
     "Write a single read-only SELECT query that answers the user's question. "
@@ -79,6 +89,7 @@ class LLMClient:
         model: str | None = None,
         timeout_seconds: float | None = None,
         max_tokens: int | None = None,
+        answer_max_tokens: int | None = None,
         transport: Any | None = None,
     ) -> None:
         settings = get_settings()
@@ -86,19 +97,40 @@ class LLMClient:
         self.model = model or settings.llm_model
         self.timeout_seconds = timeout_seconds or settings.llm_timeout_seconds
         self.max_tokens = max_tokens or settings.llm_max_tokens
+        # SQL generation may need more tokens (chain-of-thought + SQL); the
+        # final answer is capped separately so a reasoning model cannot spend
+        # its whole budget on chain-of-thought before the answer.
+        if answer_max_tokens is None:
+            answer_max_tokens = settings.llm_answer_max_tokens
+        self.answer_max_tokens = answer_max_tokens
         # httpx transport override is supported so tests can stub the network.
         self._transport = transport
 
-    async def _complete(self, system: str, user: str) -> str:
+    async def _complete(self, system: str, user: str, *, max_tokens: int | None = None) -> str:
         payload, opts = _request_payload(
-            self.model, system, user, timeout=self.timeout_seconds, max_tokens=self.max_tokens
+            self.model, system, user, timeout=self.timeout_seconds, max_tokens=max_tokens
         )
         client = httpx.AsyncClient(transport=self._transport)
         try:
-            resp = await client.post(f"{self.base_url}/chat/completions", json=payload, **opts)
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"].strip()
+            try:
+                resp = await client.post(f"{self.base_url}/chat/completions", json=payload, **opts)
+            except httpx.TimeoutException as error:
+                raise LLMError(
+                    f"LLM request timed out after {self.timeout_seconds:g}s: {error}"
+                ) from error
+            except httpx.TransportError as error:
+                raise LLMError(f"LLM request failed: {error}") from error
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as error:
+                raise LLMError(
+                    f"LLM returned HTTP {error.response.status_code}: {error}"
+                ) from error
+            try:
+                data = resp.json()
+                return data["choices"][0]["message"]["content"].strip()
+            except (KeyError, IndexError, TypeError, ValueError) as error:
+                raise LLMError(f"Unexpected LLM response: {error}") from error
         finally:
             await client.aclose()
 
@@ -113,11 +145,11 @@ class LLMClient:
                 "\n\nThe previous attempt failed with this error. Correct your SQL to "
                 f"resolve it — use only real columns/tables from the schema:\n{prior_error}"
             )
-        return await self._complete(_SQL_SYSTEM, user)
+        return await self._complete(_SQL_SYSTEM, user, max_tokens=self.max_tokens)
 
     async def generate_answer(self, question: str, sql: str, result: str) -> str:
         user = f"Question:\n{question}\n\nSQL executed:\n{sql}\n\nRows returned:\n{result}"
-        return await self._complete(_ANSWER_SYSTEM, user)
+        return await self._complete(_ANSWER_SYSTEM, user, max_tokens=self.answer_max_tokens)
 
 
 @dataclass
