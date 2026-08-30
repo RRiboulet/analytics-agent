@@ -683,12 +683,85 @@ fail-open and never gates a run).
 
 ## M6 — Evaluation
 
-Status: pending
+Status: complete
 
 Create the initial analytical benchmark and evaluation process.
 
 Success criterion:
 Agent performance can be measured rather than judged only through manual experimentation.
+
+### M6 — Evaluation
+
+Status: complete.
+
+Core decision: **ground truth = reference SQL + its result set**, not reference prose.
+Each benchmark case pairs a natural-language question with a version-controlled
+reference SQL statement; judging is fully deterministic (no LLM in the judging
+path). A case passes when the agent run completed AND the agent's result set
+matches the reference result set (order-insensitive unless the case is
+`ordered`, numeric tolerance 1e-6 relative; column aliases are ignored).
+
+Implemented:
+
+* `data/evaluation/olist_v1.yaml` — 30 benchmark cases (10 easy / 12 medium /
+  8 hard) across revenue, orders, customers, sellers, products, payments,
+  reviews, time and delivery themes; each with `reference_sql`,
+  `expected_tables` (relevance diagnostic), difficulty, category and an
+  optional `ordered` flag for top-N/trend questions. Reference SQL is
+  validated through the read-only safety layer at load time.
+* `app/evaluation/dataset.py` — schema-checked loading (`EvalCase`,
+  `DatasetError`): required fields, difficulty enum, unique ids, boolean
+  `ordered`, read-only reference SQL (same `validate_and_bound_query` gate as
+  the agent).
+* `app/evaluation/judges.py` — `compare_result_sets` (value multisets per row,
+  numeric relative tolerance, ordered/unordered modes, alias-agnostic,
+  type-strict) and `referenced_tables` (word-boundary relevance scan).
+* `app/evaluation/runner.py` — `EvaluationRunner` reuses `_run_question` so
+  every case is a genuine agent run (real LLM, real MCP read-only boundary);
+  a delegating `CountingCapabilities` wrapper records per-tool call counts
+  without touching the M4/M5 capability layer. Per-case record: status,
+  passed, attempts, latency, tool calls, agent SQL, comparison detail,
+  missing expected tables, failure reason, answer.
+* `app/evaluation/report.py` — `aggregate` (pass/failure rate, by difficulty
+  and category, attempts distribution, avg latency/attempts, tool-call total,
+  retried cases, table-relevance misses, failed ids) + markdown rendering.
+* `scripts/run_evaluation.py` — CLI (`uv run python -m scripts.run_evaluation
+  [--case ID] [--from N --to M] [--category CAT] [--difficulty easy|medium|hard]
+  [--out DIR]`); selection via `select_cases`: the 1-based inclusive range
+  addresses the *raw dataset* order (e.g. `--from 1 --to 10` = overall cases
+  1–10), and the id/category/difficulty filters narrow that slice. Writes
+  `summary.json`, per-case `results.json` and `report.md`, flushing after
+  every case so interrupted long runs keep partial results. Reuses
+  `AgentTracer` (fail-open) and closes capabilities.
+* Tests: `tests/test_evaluation.py` (39 cases incl. dataset validation,
+  comparison semantics, runner behavior with FakeLLM + stub, report math)
+  and `tests/test_evaluation_database.py` (live-DB: every reference SQL
+  executes through the read-only boundary, returns 1..max_rows rows).
+* Dependency: `pyyaml` added as a direct dependency (dataset loader).
+
+Decisions made during M6:
+
+* **Judge method**: reference-SQL result comparison over exact SQL match
+  (equivalent SQL must pass) and over LLM-as-judge (non-deterministic;
+  deferred beyond M6). Answer prose is not graded in M6.
+* **Comparison semantics**: rows compared as sorted value tuples so column
+  aliases don't matter; numbers compared with 1e-6 relative tolerance
+  (accumulation-order noise), strings/timestamps compared exactly; type
+  mismatches (`"1.0"` vs `1.0`, `true` vs `1`) count as mismatches.
+* **Ordered cases**: explicit `ordered: true` flag instead of heuristics;
+  ordered reference SQL includes deterministic tie-breaking.
+* **Reference SQL bounded like agent SQL**: the dataset-level test asserts
+  every reference result stays within `max_rows` (100), so neither side of a
+  comparison is truncated by the shared MCP row bound.
+
+Verified:
+
+* `uv run pytest` → all passed, incl. the live-DB benchmark validation
+  against the seeded Olist database (all 30 reference statements execute).
+* New `app/evaluation/` modules at 100% line/branch coverage.
+* `ruff format --check .` and `ruff check .` clean.
+* Live end-to-end benchmark run against the real LLM remains a manual step
+  (unit tests never call llama.cpp, matching M4/M5 practice).
 
 ---
 
@@ -816,7 +889,7 @@ These should be resolved during implementation rather than prematurely.
 
 Current milestone:
 
-**M5 — Observability (Langfuse)**
+**M6 — Evaluation**
 
 Completed:
 
@@ -831,14 +904,16 @@ Completed:
 * [x] Inspect existing repository
 * [x] Confirm V1 architecture
 * [x] Design Olist database migration
-
-Next:
-
-* [x] **M1 — Implement reproducible realistic (Olist) database**
+* [x] **M1 — Reproducible realistic (Olist) database**
 * [x] **M2 — MCP analytics capabilities** — `get_relationships`, `get_sample_rows`, `get_table_statistics`, `get_column_statistics`
 * [x] **M3 — Metadata + pgvector** — metadata docs, embeddings (fastembed), pgvector storage, `search_metadata`, seeding
 * [x] **M4 — First LangGraph agent** — standalone `app/agent/`, read-only MCP boundary, retry recovery, bounded attempts, Langfuse fail-open tracing.
 * [x] **M5 — Observability (Langfuse)** — end-to-end run traces: nodes/state, LLM calls, MCP tool calls, retries, final answer; fail-open, flush-on-exit.
+* [x] **M6 — Evaluation** — 30-case benchmark (`data/evaluation/olist_v1.yaml`), deterministic reference-SQL judging, `app/evaluation/` (dataset/judges/runner/report), `scripts/run_evaluation.py` CLI with JSON + markdown reports.
+
+Next:
+
+* **M7 — Autonomous Analytics Manager** (future; see plan §13).
 
 # 18. M1 Status & Decisions
 
