@@ -23,7 +23,7 @@ The long-term goal is an **Autonomous Analytics Manager**, but V2 should first e
 
 # 2. Current V1
 
-The current project contains (under the `mcp-server-demo-main/` project home; `AGENTS.md`/`PLAN.md` live at the repo root `/workspace`):
+The current project contains (under the `analytics-agent/` project home; `AGENTS.md`/`PLAN.md` live at the repo root `/workspace`):
 
 ```text
 app/

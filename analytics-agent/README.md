@@ -1,4 +1,4 @@
-# Factory Data MCP Demo
+# Analytics MCP Server & Agent
 
 A local FastMCP server for querying realistic e-commerce data (the Olist Brazilian E-Commerce dataset) in PostgreSQL, designed to be driven from a local LLM served by llama.cpp. It follows the reusable MCP server pattern: the server factory owns lifecycle and transport, `app/tools/registry.py` is the explicit tool registry, and `app/data_sources/postgres.py` owns database access.
 
@@ -19,7 +19,7 @@ A local FastMCP server for querying realistic e-commerce data (the Olist Brazili
   end-to-end: retrieve metadata -> generate read-only SQL -> validate -> execute through MCP
   -> analyze -> answer, with bounded retry recovery and optional Langfuse tracing
 
-This is a local demonstration. Authentication, Azure deployment, telemetry, agents, and write operations are intentionally outside this first version.
+This is a local demonstration. Authentication, Azure deployment, and write operations are intentionally outside this first version.
 
 ## Prerequisites
 

@@ -52,9 +52,9 @@ RUN git config --system alias.st status \
 
 # Pre-create the project venv and install dependencies for the MCP demo
 # so the environment is ready without a manual `uv sync`.
-COPY mcp-server-demo-main/pyproject.toml \
-    mcp-server-demo-main/uv.lock \
-    mcp-server-demo-main/README.md \
-    /workspace/mcp-server-demo-main/
+COPY analytics-agent/pyproject.toml \
+    analytics-agent/uv.lock \
+    analytics-agent/README.md \
+    /workspace/analytics-agent/
 
-RUN cd /workspace/mcp-server-demo-main && uv venv && uv sync --all-groups
+RUN cd /workspace/analytics-agent && uv venv && uv sync --all-groups

@@ -61,5 +61,5 @@
         }
     },
     "overrideCommand": false,
-    "initializeCommand": "cd mcp-server-demo-main && echo 'Python + uv + pi coding agent + Factory Data MCP demo (Postgres via docker) ready!'"
+    "initializeCommand": "cd analytics-agent && echo 'Python + uv + pi coding agent + analytics agent (Postgres via docker) ready!'"
 }

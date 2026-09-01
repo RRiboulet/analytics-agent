@@ -21,8 +21,8 @@ sudo chown -R vscode:vscode /home/vscode/.pi
 sudo chown -R vscode:vscode /workspace
 
 # --- project setup ---
-cp mcp-server-demo-main/.env.example mcp-server-demo-main/.env
-cd mcp-server-demo-main
+cp analytics-agent/.env.example analytics-agent/.env
+cd analytics-agent
 uv sync 2>&1 | tail -5
 docker compose -f docker-compose.yml up -d postgres
 sleep 8

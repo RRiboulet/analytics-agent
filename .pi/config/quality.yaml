@@ -1,6 +1,6 @@
 # Project quality configuration for the reusable coding skills.
 # Path declared in AGENTS.md (host integration). Commands are run from
-# mcp-server-demo-main/ (the project home) unless declared otherwise.
+# analytics-agent/ (the project home) unless declared otherwise.
 schema: "reusable-coding-quality"
 version: 1
 
@@ -20,49 +20,49 @@ commands:
   setup:
     - name: "sync-deps"
       command: "uv sync"
-      working_directory: "mcp-server-demo-main"
+      working_directory: "analytics-agent"
       timeout_seconds: 600
       required: true
 
   format_check:
     - name: "ruff-format-check"
       command: "uv run ruff format --check ."
-      working_directory: "mcp-server-demo-main"
+      working_directory: "analytics-agent"
       timeout_seconds: 300
       required: true
 
   lint:
     - name: "ruff-lint"
       command: "uv run ruff check ."
-      working_directory: "mcp-server-demo-main"
+      working_directory: "analytics-agent"
       timeout_seconds: 300
       required: true
 
   focused_test:
     - name: "pytest-focused"
       command: "uv run pytest"
-      working_directory: "mcp-server-demo-main"
+      working_directory: "analytics-agent"
       timeout_seconds: 600
       required: false
 
   full_test:
     - name: "pytest-full"
       command: "uv run pytest"
-      working_directory: "mcp-server-demo-main"
+      working_directory: "analytics-agent"
       timeout_seconds: 1800
       required: true
 
   coverage:
     - name: "pytest-coverage"
       command: "uv run pytest --cov=app --cov-report=term-missing"
-      working_directory: "mcp-server-demo-main"
+      working_directory: "analytics-agent"
       timeout_seconds: 1800
       required: true
 
   final_gate:
     - name: "final-gate"
       command: "uv run ruff format --check . && uv run ruff check . && uv run pytest"
-      working_directory: "mcp-server-demo-main"
+      working_directory: "analytics-agent"
       timeout_seconds: 2400
       required: true
 

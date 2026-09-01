@@ -31,9 +31,9 @@ On container startup, the project environment is prepared and the PostgreSQL ser
 
 Coordination and planning docs (`AGENTS.md`, `PLAN.md`) live at the repo root `/workspace`.
 
-The project code lives in `mcp-server-demo-main/`. That name is a generic folder name, not a structure choice — it is the **permanent project home**, not a temporary download.
+The project code lives in `analytics-agent/` — the **permanent project home**.
 
-Run `uv`, `uvx`, pytest, ruff, and Docker Compose commands from `mcp-server-demo-main/`. Relative paths such as `app/`, `db/`, and `tests/` in this file and in `PLAN.md` are relative to that directory.
+Run `uv`, `uvx`, pytest, ruff, and Docker Compose commands from `analytics-agent/`. Relative paths such as `app/`, `db/`, and `tests/` in this file and in `PLAN.md` are relative to that directory.
 
 ## Project Context
 
@@ -75,7 +75,7 @@ automated-quality-checks
 final-review-and-validation
 ```
 
-The project quality configuration lives at `.pi/config/quality.yaml`; the skills read their commands from that file (working directory is `mcp-server-demo-main/`). Coverage is measured for new/changed executable code via pytest-cov, targeting the configured line/branch thresholds.
+The project quality configuration lives at `.pi/config/quality.yaml`; the skills read their commands from that file (working directory is `analytics-agent/`). Coverage is measured for new/changed executable code via pytest-cov, targeting the configured line/branch thresholds.
 
 The sequence is not strictly linear — later phases may return to planning, implementation, or testing when evidence reveals a gap. Do not invoke every skill mechanically for trivial changes. Use the skills when their scope applies.
 
