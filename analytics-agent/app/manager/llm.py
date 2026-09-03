@@ -24,9 +24,21 @@ _DECOMPOSE_SYSTEM = (
     "bullets, no markdown, and no explanations."
 )
 
+_SYNTHESIZE_SYSTEM = (
+    "You are a senior data analyst writing a management report. Using ONLY "
+    "the evidence below (sub-questions, executed SQL, result rows and "
+    "analyst answers), write a concise markdown report answering the "
+    "management request. Ground every number strictly in the evidence "
+    "result rows: copy numbers exactly as they appear — no rounding, no "
+    "derived or computed numbers, no invented values, and no percentages "
+    "unless a percentage appears in a result row. Do not use numbered "
+    "lists or any numbering. If the evidence is insufficient for a claim, "
+    "say so instead of filling the gap."
+)
+
 
 class ManagerLLM(Protocol):
-    """The model capability the manager workflow needs."""
+    """The model capabilities the manager workflow needs."""
 
     async def decompose(self, request: str, table_names: list[str]) -> str:
         """Return the raw model output decomposing `request` into sub-questions.
@@ -35,6 +47,15 @@ class ManagerLLM(Protocol):
         stay table-name-level (D009) — detailed schema discovery is the
         analyst's job. Raises ``LLMError`` on timeout/transport/HTTP/response
         failures.
+        """
+        ...
+
+    async def synthesize(self, request: str, evidence: str) -> str:
+        """Return the raw model report grounded only in `evidence`.
+
+        ``evidence`` is the formatted evidence text (see
+        ``app.manager.synthesize.format_evidence``). Raises ``LLMError`` on
+        timeout/transport/HTTP/response failures.
         """
         ...
 
@@ -48,22 +69,37 @@ class ManagerLLMClient(LLMClient):
             "decompose", user, system=_DECOMPOSE_SYSTEM, max_tokens=self.max_tokens
         )
 
+    async def synthesize(self, request: str, evidence: str) -> str:
+        user = f"Management request:\n{request}\n\nEvidence from the sub-analyses:\n{evidence}"
+        return await self._traced_complete(
+            "synthesize_report", user, system=_SYNTHESIZE_SYSTEM, max_tokens=self.max_tokens
+        )
+
 
 @dataclass
 class FakeManagerLLM:
     """Deterministic manager LLM for tests.
 
-    Returns ``raw`` verbatim (so tests can exercise the parser with bullets,
-    fences, etc.) or raises the configured ``llm_error``. Calls are recorded
-    for assertions.
+    Returns ``raw``/``report`` verbatim (so tests can exercise the parser,
+    the groundedness check, etc.) or raises the configured ``llm_error``.
+    Calls are recorded for assertions.
     """
 
     raw: str = "Which product categories generated the most revenue?"
+    # Default report contains no digits, so it is trivially grounded.
+    report: str = "Report based on the recorded evidence."
     llm_error: LLMError | None = None
     calls: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
+    report_calls: list[tuple[str, str]] = field(default_factory=list)
 
     async def decompose(self, request: str, table_names: list[str]) -> str:
         self.calls.append((request, tuple(table_names)))
         if self.llm_error is not None:
             raise self.llm_error
         return self.raw
+
+    async def synthesize(self, request: str, evidence: str) -> str:
+        self.report_calls.append((request, evidence))
+        if self.llm_error is not None:
+            raise self.llm_error
+        return self.report

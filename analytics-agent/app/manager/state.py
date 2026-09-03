@@ -33,6 +33,10 @@ class ManagerState(TypedDict, total=False):
     sub_questions: list[str]
     decomposition_error: str
     llm_error: str
+    # Groundedness violation message (M7.3): the synthesized report cited a
+    # number that appears in no evidence result set. The run fails and the
+    # report is never stored — never ship a fabricated report.
+    groundedness_error: str
     # Evidence accumulated from the analyst sub-runs, in execution order.
     evidence: list[EvidenceRecord]
     # Per-sub-question failures; sub-analysis failure is recorded and the run

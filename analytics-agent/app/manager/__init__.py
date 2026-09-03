@@ -16,6 +16,7 @@ from app.manager.decompose import (
 from app.manager.evidence import EvidenceRecord
 from app.manager.llm import FakeManagerLLM, ManagerLLM, ManagerLLMClient
 from app.manager.state import ManagerState, ManagerStatus
+from app.manager.synthesize import extract_report_numbers, format_evidence, groundedness_violation
 
 __all__ = [
     "MAX_SUB_QUESTIONS",
@@ -27,5 +28,8 @@ __all__ = [
     "ManagerState",
     "ManagerStatus",
     "decompose_request",
+    "extract_report_numbers",
+    "format_evidence",
+    "groundedness_violation",
     "parse_sub_questions",
 ]

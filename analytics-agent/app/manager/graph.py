@@ -8,13 +8,18 @@ schema hint, and every evidence item is produced by an analyst run.
 
 Failure policy (kept deliberately simple, per D009's fixed pipeline):
 
-* ``LLMError`` on the decompose call (transient: timeout/transport/HTTP/rate
-  limits — the common hosted-model failure mode) retries up to a bounded
-  attempt count.
+* ``LLMError`` on the decompose or synthesis call (transient:
+  timeout/transport/HTTP/rate limits — the common hosted-model failure mode)
+  retries up to a bounded attempt count. The attempt budget is shared by
+  both retryable stages, so it stays a single hard bound.
 * ``DecompositionError`` (unusable model output) fails immediately: at
   temperature 0 the same input reproduces the same invalid output.
 * A failing sub-analysis is recorded and the run continues; only when *all*
   sub-analyses fail does the manager fail.
+* A groundedness violation in the synthesized report (a number that appears
+  in no evidence result set) fails the run and the report is never stored —
+  never ship a fabricated report. No retry: deterministic output at
+  temperature 0 would reproduce the same violation.
 
 Exceptions raised by ``run_analyst`` propagate (mirroring the agent's
 ``call_tool`` contract): the analyst graph reports its own failures in state.
@@ -34,15 +39,18 @@ from app.manager.decompose import DecompositionError, decompose_request
 from app.manager.evidence import EvidenceRecord
 from app.manager.llm import ManagerLLM
 from app.manager.state import ManagerState, ManagerStatus
+from app.manager.synthesize import format_evidence, groundedness_violation
 
 # Node identifiers.
 DECOMPOSE = "decompose"
 RUN_SUB_ANALYSES = "run_sub_analyses"
+SYNTHESIZE = "synthesize"
 RETRY = "retry"
 FAIL = "fail"
 
 # Edge identifiers returned by conditional routers.
 SUB_ANALYSES_EDGE = "sub_analyses"
+SYNTHESIZE_EDGE = "synthesize"
 RETRY_EDGE = "retry"
 FAIL_EDGE = "fail"
 
@@ -125,6 +133,34 @@ def build_manager_graph(services: ManagerServices) -> Any:
     async def _fail(state: ManagerState) -> dict[str, Any]:
         return {"status": ManagerStatus.FAILED}
 
+    async def _synthesize(state: ManagerState) -> dict[str, Any]:
+        update: dict[str, Any] = {"status": ManagerStatus.SYNTHESIZING}
+        try:
+            report = await services.llm.synthesize(
+                state["request"], format_evidence(state["evidence"])
+            )
+        except LLMError as error:
+            return {**update, "llm_error": str(error), "report": None}
+        violation = groundedness_violation(report, state["evidence"])
+        if violation:
+            # Never ship a fabricated report: on a violation the report is
+            # not stored and the run fails. Deterministic output at
+            # temperature 0 would reproduce the same violation, so no retry.
+            return {
+                **update,
+                "status": ManagerStatus.FAILED,
+                "groundedness_error": violation,
+                "report": None,
+                "llm_error": None,
+            }
+        return {
+            **update,
+            "status": ManagerStatus.COMPLETED,
+            "report": report,
+            "groundedness_error": None,
+            "llm_error": None,
+        }
+
     def _route_after_decompose(state: ManagerState) -> str:
         if state.get("decomposition_error"):
             # Unusable model output: deterministic, retrying cannot help.
@@ -134,9 +170,29 @@ def build_manager_graph(services: ManagerServices) -> Any:
             return RETRY_EDGE if state.get("attempts", 1) < services.max_attempts else FAIL_EDGE
         return SUB_ANALYSES_EDGE
 
+    def _route_after_sub_analyses(state: ManagerState) -> str:
+        # All-failing sub-analyses already set FAILED; only a run with
+        # grounded evidence reaches synthesis.
+        return SYNTHESIZE_EDGE if state.get("status") is ManagerStatus.COMPLETED else END
+
+    def _route_after_synthesize(state: ManagerState) -> str:
+        if state.get("llm_error"):
+            # Transient model/transport failure: bounded retry (the shared
+            # attempt budget).
+            return RETRY_EDGE if state.get("attempts", 1) < services.max_attempts else FAIL_EDGE
+        # Both a completed report and a groundedness violation end the run
+        # (the violation already set FAILED and withheld the report).
+        return END
+
+    def _route_after_retry(state: ManagerState) -> str:
+        # Retry targets the stage that failed: synthesis once evidence
+        # exists, decomposition otherwise.
+        return SYNTHESIZE if state.get("evidence") else DECOMPOSE
+
     g = StateGraph(ManagerState)
     g.add_node(DECOMPOSE, _decompose)
     g.add_node(RUN_SUB_ANALYSES, _run_sub_analyses)
+    g.add_node(SYNTHESIZE, _synthesize)
     g.add_node(RETRY, _retry)
     g.add_node(FAIL, _fail)
 
@@ -146,8 +202,21 @@ def build_manager_graph(services: ManagerServices) -> Any:
         _route_after_decompose,
         {SUB_ANALYSES_EDGE: RUN_SUB_ANALYSES, RETRY_EDGE: RETRY, FAIL_EDGE: FAIL},
     )
-    g.add_edge(RETRY, DECOMPOSE)
-    g.add_edge(RUN_SUB_ANALYSES, END)
+    g.add_conditional_edges(
+        RUN_SUB_ANALYSES,
+        _route_after_sub_analyses,
+        {SYNTHESIZE_EDGE: SYNTHESIZE, END: END},
+    )
+    g.add_conditional_edges(
+        SYNTHESIZE,
+        _route_after_synthesize,
+        {RETRY_EDGE: RETRY, FAIL_EDGE: FAIL, END: END},
+    )
+    g.add_conditional_edges(
+        RETRY,
+        _route_after_retry,
+        {DECOMPOSE: DECOMPOSE, SYNTHESIZE: SYNTHESIZE},
+    )
     g.add_edge(FAIL, END)
 
     return g.compile()
