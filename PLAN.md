@@ -853,6 +853,29 @@ Stage A — groundwork (deliver first):
 * M7.4 — surface + observability: CLI + `run()` (optional `--out` writes
   `report.md` + `evidence.json`), manager-level trace spans so Langfuse shows
   manager run → analyst sub-runs → nodes.
+  Status: complete. `app/manager/entrypoint.py` — `run_manager()` + CLI
+  (`python -m app.manager [--json] [--out DIR] '<request>'`),
+  `ManagerRunResult` (report/status/sub_questions/evidence/attempts/error;
+  error precedence decomposition → groundedness → llm → first sub-analysis
+  error only when the run failed). Wiring: one shared `MCPCapabilities`
+  instance for all sub-analyses (single MCP connection); one
+  `ManagerLLMClient` serves both the manager calls and the analyst sub-runs
+  (it extends `LLMClient`, so it satisfies both protocols);
+  `create_manager_llm()` mirrors the agent's `LLM_PROVIDER` selection. The
+  fail-open `AgentTracer` config is passed to the manager graph *and* every
+  analyst sub-run, so one Langfuse trace nests manager run → analyst
+  sub-runs → nodes; tracer flushes after every run, including crashes.
+  `--out` writes `report.md` (only when a report exists) and
+  `evidence.json` (always: status, sub-questions, errors, evidence
+  records). New setting `MANAGER_MAX_ATTEMPTS` (default 2) bounds the
+  manager's shared retry budget. Tests: `tests/test_manager_entrypoint.py`
+  (18 tests: tracer-config propagation to both graphs, e2e with fakes,
+  groundedness surfacing, artifacts, CLI variants, provider selection,
+  subprocess module guard). Coverage: all manager modules at 100% line+
+  branch except the two process-entry guard lines in
+  `entrypoint.py`/`__main__.py` (subprocess-executed; same accepted pattern
+  as `app/agent/entrypoint.py` since M4). Stage A complete: live
+  end-to-end validation against the real LLM is the remaining manual step.
 
 Stage B — agentic follow-up (once Stage A is stable):
 
@@ -1029,10 +1052,11 @@ Completed:
 
 Next:
 
-* **M7.4** — surface + observability: CLI + `run()` (optional `--out` writes
-  `report.md` + `evidence.json`), manager-level trace spans so Langfuse
-  shows manager run → analyst sub-runs → nodes.
-* **M7 Stage B** — M7.5–M7.6: bounded follow-up round, evaluation extension.
+* **M7 Stage A wrap-up** — first live end-to-end manager run against the
+  real LLM (manual; decompose prompt quality + groundedness false-positive
+  rate are the two open risks).
+* **M7 Stage B** — M7.5 (bounded follow-up round) and M7.6
+  (management-level evaluation extension).
 
 # 18. M1 Status & Decisions
 

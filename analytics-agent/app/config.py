@@ -109,6 +109,17 @@ class Settings(BaseSettings):
     # loops when SQL stays invalid or errors).
     agent_max_attempts: int = Field(default=3, validation_alias="AGENT_MAX_ATTEMPTS", ge=1, le=10)
 
+    # ------------------------------------------------------------------
+    # Analytics manager (M7)
+    # ------------------------------------------------------------------
+
+    # Bounded retry budget for the manager's retryable model calls
+    # (decompose / synthesize). Shared by both stages so it stays a single
+    # hard bound (D009 fixed pipeline).
+    manager_max_attempts: int = Field(
+        default=2, validation_alias="MANAGER_MAX_ATTEMPTS", ge=1, le=10
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

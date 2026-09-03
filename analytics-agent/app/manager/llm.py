@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from app.agent.llm import LLMClient, LLMError
+from app.config import get_settings
 
 _DECOMPOSE_SYSTEM = (
     "You are an analytics manager planning a multi-part analysis of the "
@@ -103,3 +104,25 @@ class FakeManagerLLM:
         if self.llm_error is not None:
             raise self.llm_error
         return self.report
+
+
+def create_manager_llm() -> ManagerLLMClient:
+    """Build the manager LLM client selected by ``LLM_PROVIDER``.
+
+    Mirrors the agent's provider selection (``app.agent.llm.create_llm``):
+    ``llamacpp`` (default) uses the local OpenAI-compatible server;
+    ``openrouter`` uses the hosted API with the required
+    ``OPENROUTER_API_KEY``. ``ManagerLLMClient`` extends ``LLMClient``, so
+    the same instance can also serve as the analyst's LLM (one shared client
+    for the whole manager run).
+    """
+    settings = get_settings()
+    if settings.llm_provider == "openrouter":
+        if not settings.openrouter_api_key:
+            raise ValueError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter")
+        return ManagerLLMClient(
+            base_url=settings.openrouter_base_url,
+            model=settings.openrouter_model,
+            api_key=settings.openrouter_api_key,
+        )
+    return ManagerLLMClient()

@@ -13,8 +13,9 @@ from app.manager.decompose import (
     decompose_request,
     parse_sub_questions,
 )
+from app.manager.entrypoint import ManagerRunResult, run_manager
 from app.manager.evidence import EvidenceRecord
-from app.manager.llm import FakeManagerLLM, ManagerLLM, ManagerLLMClient
+from app.manager.llm import FakeManagerLLM, ManagerLLM, ManagerLLMClient, create_manager_llm
 from app.manager.state import ManagerState, ManagerStatus
 from app.manager.synthesize import extract_report_numbers, format_evidence, groundedness_violation
 
@@ -25,11 +26,14 @@ __all__ = [
     "FakeManagerLLM",
     "ManagerLLM",
     "ManagerLLMClient",
+    "ManagerRunResult",
     "ManagerState",
     "ManagerStatus",
+    "create_manager_llm",
     "decompose_request",
     "extract_report_numbers",
     "format_evidence",
     "groundedness_violation",
     "parse_sub_questions",
+    "run_manager",
 ]
