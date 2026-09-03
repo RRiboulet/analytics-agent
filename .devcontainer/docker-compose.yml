@@ -1,12 +1,8 @@
 services:
   devcontainer:
     build:
-      # The compose file lives in .devcontainer/, so context: . resolves to
-      # the .devcontainer/ directory (where the Dockerfile and .dockerignore
-      # live). This keeps the build context — and its .dockerignore —
-      # co-located with the Dockerfile.
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
     volumes:
       - ..:/workspace:cached
       - pi-config:/home/vscode/.pi

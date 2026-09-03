@@ -1,0 +1,360 @@
+# Olist analytics benchmark v1 (M6).
+#
+# Each case pairs a natural-language question with a reference SQL statement
+# executed against the same reproducible Olist seed. Judging compares result
+# sets (order-insensitive unless ordered: true), so reference SQL defines the
+# ground truth numerically — no reference prose, no LLM in the judging path.
+#
+# Conventions:
+# - ordered: true  -> row order is significant (top-N / trend questions)
+# - expected_tables -> relevance diagnostic; tables the answer must involve
+# - deterministic tie-breaking (e.g. ORDER BY ..., id) keeps ordered cases stable
+- id: revenue-001
+  question: "What is the total revenue from all order items?"
+  difficulty: easy
+  category: revenue
+  reference_sql: >
+    SELECT SUM(price) AS total_revenue FROM order_items
+  expected_tables: [order_items]
+- id: orders-002
+  question: "How many orders are in the database?"
+  difficulty: easy
+  category: orders
+  reference_sql: >
+    SELECT COUNT(*) AS total_orders FROM orders
+  expected_tables: [orders]
+- id: customers-003
+  question: "How many customer records are there?"
+  difficulty: easy
+  category: customers
+  reference_sql: >
+    SELECT COUNT(*) AS total_customers FROM customers
+  expected_tables: [customers]
+- id: sellers-004
+  question: "How many sellers are there?"
+  difficulty: easy
+  category: sellers
+  reference_sql: >
+    SELECT COUNT(*) AS total_sellers FROM sellers
+  expected_tables: [sellers]
+- id: products-005
+  question: "How many distinct product categories (English names) exist?"
+  difficulty: easy
+  category: products
+  reference_sql: >
+    SELECT COUNT(DISTINCT product_category_name_english) AS category_count
+    FROM product_category_translation
+  expected_tables: [product_category_translation]
+- id: reviews-006
+  question: "What is the average review score across all reviews?"
+  difficulty: easy
+  category: reviews
+  reference_sql: >
+    SELECT AVG(review_score) AS avg_review_score FROM order_reviews
+  expected_tables: [order_reviews]
+- id: revenue-007
+  question: "What is the total freight value across all order items?"
+  difficulty: easy
+  category: revenue
+  reference_sql: >
+    SELECT SUM(freight_value) AS total_freight FROM order_items
+  expected_tables: [order_items]
+- id: orders-008
+  question: "How many orders were delivered?"
+  difficulty: easy
+  category: orders
+  reference_sql: >
+    SELECT COUNT(*) AS delivered_orders FROM orders WHERE order_status = 'delivered'
+  expected_tables: [orders]
+- id: payments-009
+  question: "What is the average payment value?"
+  difficulty: easy
+  category: payments
+  reference_sql: >
+    SELECT AVG(payment_value) AS avg_payment_value FROM order_payments
+  expected_tables: [order_payments]
+- id: reviews-010
+  question: "How many five-star reviews are there?"
+  difficulty: easy
+  category: reviews
+  reference_sql: >
+    SELECT COUNT(*) AS five_star_reviews FROM order_reviews WHERE review_score = 5
+  expected_tables: [order_reviews]
+- id: revenue-011
+  question: "Which product categories (English names) generated the most revenue, highest first?"
+  difficulty: medium
+  category: revenue
+  reference_sql: >
+    SELECT t.product_category_name_english AS category, SUM(oi.price) AS revenue
+    FROM order_items oi
+    JOIN products p ON p.product_id = oi.product_id
+    JOIN product_category_translation t ON t.product_category_name = p.product_category_name
+    GROUP BY t.product_category_name_english
+    ORDER BY revenue DESC
+  expected_tables: [order_items, products, product_category_translation]
+  ordered: true
+- id: customers-012
+  question: "Which states have the most customers, highest first?"
+  difficulty: medium
+  category: customers
+  reference_sql: >
+    SELECT customer_state, COUNT(*) AS customers
+    FROM customers
+    GROUP BY customer_state
+    ORDER BY customers DESC
+  expected_tables: [customers]
+  ordered: true
+- id: payments-013
+  question: "What is the average order value per payment type, highest first?
+    Order value is the sum of all payment amounts for the order."
+  difficulty: medium
+  category: payments
+  reference_sql: >
+    SELECT payment_type, SUM(payment_value) / COUNT(DISTINCT order_id) AS avg_order_value
+    FROM order_payments
+    GROUP BY payment_type
+    ORDER BY avg_order_value DESC
+  expected_tables: [order_payments]
+  ordered: true
+- id: time-014
+  question: "How many orders were placed in each month of 2017, in chronological order?"
+  difficulty: medium
+  category: time
+  reference_sql: >
+    SELECT DATE_TRUNC('month', order_purchase_timestamp) AS month, COUNT(*) AS orders
+    FROM orders
+    WHERE order_purchase_timestamp >= TIMESTAMP '2017-01-01'
+      AND order_purchase_timestamp < TIMESTAMP '2018-01-01'
+    GROUP BY month
+    ORDER BY month
+  expected_tables: [orders]
+  ordered: true
+- id: delivery-015
+  question: "What is the average delivery time in days for orders that were delivered?
+    Delivery time is the number of days between purchase and customer delivery."
+  difficulty: medium
+  category: delivery
+  reference_sql: >
+    SELECT AVG(EXTRACT(EPOCH FROM (order_delivered_customer_date - order_purchase_timestamp)) / 86400) AS avg_delivery_days
+    FROM orders
+    WHERE order_delivered_customer_date IS NOT NULL
+  expected_tables: [orders]
+- id: reviews-016
+  question: "Which customer states have the highest average review score, highest first?"
+  difficulty: medium
+  category: reviews
+  reference_sql: >
+    SELECT c.customer_state, AVG(r.review_score) AS avg_review_score
+    FROM order_reviews r
+    JOIN orders o ON o.order_id = r.order_id
+    JOIN customers c ON c.customer_id = o.customer_id
+    GROUP BY c.customer_state
+    ORDER BY avg_review_score DESC
+  expected_tables: [order_reviews, orders, customers]
+  ordered: true
+- id: sellers-017
+  question: "Which ten sellers generated the most revenue from item prices?"
+  difficulty: medium
+  category: sellers
+  reference_sql: >
+    SELECT s.seller_id, SUM(oi.price) AS revenue
+    FROM order_items oi
+    JOIN sellers s ON s.seller_id = oi.seller_id
+    GROUP BY s.seller_id
+    ORDER BY revenue DESC, s.seller_id
+    LIMIT 10
+  expected_tables: [order_items, sellers]
+  ordered: true
+- id: payments-018
+  question: "How many payments use each number of installments, ordered by installment count?"
+  difficulty: medium
+  category: payments
+  reference_sql: >
+    SELECT payment_installments, COUNT(*) AS payment_count
+    FROM order_payments
+    GROUP BY payment_installments
+    ORDER BY payment_installments
+  expected_tables: [order_payments]
+  ordered: true
+- id: time-019
+  question: "How many orders were placed on each day of the week (0 = Sunday), in weekday order?"
+  difficulty: medium
+  category: time
+  reference_sql: >
+    SELECT EXTRACT(DOW FROM order_purchase_timestamp) AS weekday, COUNT(*) AS orders
+    FROM orders
+    GROUP BY weekday
+    ORDER BY weekday
+  expected_tables: [orders]
+  ordered: true
+- id: products-020
+  question: "Which product categories (English names) have the highest average item price, highest first?"
+  difficulty: medium
+  category: products
+  reference_sql: >
+    SELECT t.product_category_name_english AS category, AVG(oi.price) AS avg_price
+    FROM order_items oi
+    JOIN products p ON p.product_id = oi.product_id
+    JOIN product_category_translation t ON t.product_category_name = p.product_category_name
+    GROUP BY t.product_category_name_english
+    ORDER BY avg_price DESC
+  expected_tables: [order_items, products, product_category_translation]
+  ordered: true
+- id: orders-021
+  question: "How many orders are in each order status, most common first?"
+  difficulty: medium
+  category: orders
+  reference_sql: >
+    SELECT order_status, COUNT(*) AS orders
+    FROM orders
+    GROUP BY order_status
+    ORDER BY orders DESC, order_status
+  expected_tables: [orders]
+  ordered: true
+- id: revenue-022
+  question: "Which customer states have the highest average freight value, highest first?"
+  difficulty: medium
+  category: revenue
+  reference_sql: >
+    SELECT c.customer_state, AVG(oi.freight_value) AS avg_freight
+    FROM order_items oi
+    JOIN orders o ON o.order_id = oi.order_id
+    JOIN customers c ON c.customer_id = o.customer_id
+    GROUP BY c.customer_state
+    ORDER BY avg_freight DESC
+  expected_tables: [order_items, orders, customers]
+  ordered: true
+- id: revenue-023
+  question: "Which customer states have the highest average order value, highest first?
+    Order value is the total price of all items in an order."
+  difficulty: hard
+  category: revenue
+  reference_sql: >
+    SELECT customer_state, SUM(order_value) / COUNT(*) AS avg_order_value
+    FROM (
+        SELECT o.order_id, c.customer_state, SUM(oi.price) AS order_value
+        FROM orders o
+        JOIN customers c ON c.customer_id = o.customer_id
+        JOIN order_items oi ON oi.order_id = o.order_id
+        GROUP BY o.order_id, c.customer_state
+    ) per_order
+    GROUP BY customer_state
+    ORDER BY avg_order_value DESC
+  expected_tables: [orders, customers, order_items]
+  ordered: true
+- id: time-024
+  question: "How did revenue (sum of item prices) develop month by month over the whole
+    dataset, in chronological order?"
+  difficulty: hard
+  category: time
+  reference_sql: >
+    SELECT DATE_TRUNC('month', o.order_purchase_timestamp) AS month, SUM(oi.price) AS revenue
+    FROM orders o
+    JOIN order_items oi ON oi.order_id = o.order_id
+    GROUP BY month
+    ORDER BY month
+  expected_tables: [orders, order_items]
+  ordered: true
+- id: delivery-025
+  question: "What is the average delivery time in days for delivered orders, grouped by
+    review score (1 to 5), in score order?"
+  difficulty: hard
+  category: delivery
+  reference_sql: >
+    SELECT r.review_score,
+           AVG(EXTRACT(EPOCH FROM (o.order_delivered_customer_date - o.order_purchase_timestamp)) / 86400) AS avg_delivery_days
+    FROM order_reviews r
+    JOIN orders o ON o.order_id = r.order_id
+    WHERE o.order_delivered_customer_date IS NOT NULL
+    GROUP BY r.review_score
+    ORDER BY r.review_score
+  expected_tables: [order_reviews, orders]
+  ordered: true
+- id: sellers-026
+  question: "Which ten sellers had the largest revenue decline from the first half of
+    2018 to the second half of 2018, ranked by their first-half revenue?"
+  difficulty: hard
+  category: sellers
+  reference_sql: >
+    SELECT seller_id, revenue_2018_h1, revenue_2018_h2
+    FROM (
+        SELECT oi.seller_id,
+               SUM(oi.price) FILTER (WHERE o.order_purchase_timestamp >= TIMESTAMP '2018-01-01'
+                 AND o.order_purchase_timestamp < TIMESTAMP '2018-07-01') AS revenue_2018_h1,
+               SUM(oi.price) FILTER (WHERE o.order_purchase_timestamp >= TIMESTAMP '2018-07-01') AS revenue_2018_h2
+        FROM order_items oi
+        JOIN orders o ON o.order_id = oi.order_id
+        WHERE o.order_purchase_timestamp >= TIMESTAMP '2018-01-01'
+          AND o.order_purchase_timestamp < TIMESTAMP '2019-01-01'
+        GROUP BY oi.seller_id
+    ) seller_revenue
+    WHERE revenue_2018_h2 < revenue_2018_h1
+    ORDER BY revenue_2018_h1 DESC, seller_id
+    LIMIT 10
+  expected_tables: [order_items, orders, sellers]
+  ordered: true
+- id: time-027
+  question: "Which five months were the busiest by number of orders, most orders first?"
+  difficulty: hard
+  category: time
+  reference_sql: >
+    SELECT DATE_TRUNC('month', order_purchase_timestamp) AS month, COUNT(*) AS orders
+    FROM orders
+    GROUP BY month
+    ORDER BY orders DESC, month
+    LIMIT 5
+  expected_tables: [orders]
+  ordered: true
+- id: revenue-028
+  question: "Compare revenue (sum of item prices) per product category (English name)
+    between 2017 and 2018, one row per category with the two yearly totals, alphabetical by category."
+  difficulty: hard
+  category: revenue
+  reference_sql: >
+    SELECT t.product_category_name_english AS category,
+           SUM(oi.price) FILTER (WHERE o.order_purchase_timestamp >= TIMESTAMP '2017-01-01'
+             AND o.order_purchase_timestamp < TIMESTAMP '2018-01-01') AS revenue_2017,
+           SUM(oi.price) FILTER (WHERE o.order_purchase_timestamp >= TIMESTAMP '2018-01-01'
+             AND o.order_purchase_timestamp < TIMESTAMP '2019-01-01') AS revenue_2018
+    FROM order_items oi
+    JOIN orders o ON o.order_id = oi.order_id
+    JOIN products p ON p.product_id = oi.product_id
+    JOIN product_category_translation t ON t.product_category_name = p.product_category_name
+    GROUP BY t.product_category_name_english
+    ORDER BY category
+  expected_tables: [order_items, orders, products, product_category_translation]
+- id: reviews-029
+  question: "Which product categories (English names) have an average review score below
+    3.5, considering each order only once per category it appears in? Alphabetical by category."
+  difficulty: hard
+  category: reviews
+  reference_sql: >
+    SELECT category, AVG(review_score) AS avg_review_score
+    FROM (
+        SELECT DISTINCT o.order_id, t.product_category_name_english AS category, r.review_score
+        FROM order_reviews r
+        JOIN orders o ON o.order_id = r.order_id
+        JOIN order_items oi ON oi.order_id = o.order_id
+        JOIN products p ON p.product_id = oi.product_id
+        JOIN product_category_translation t ON t.product_category_name = p.product_category_name
+    ) order_categories
+    GROUP BY category
+    HAVING AVG(review_score) < 3.5
+    ORDER BY category
+  expected_tables: [order_reviews, orders, order_items, products, product_category_translation]
+- id: delivery-030
+  question: "Which ten customer states had the most orders delivered after the estimated
+    delivery date?"
+  difficulty: hard
+  category: delivery
+  reference_sql: >
+    SELECT c.customer_state, COUNT(*) AS late_deliveries
+    FROM orders o
+    JOIN customers c ON c.customer_id = o.customer_id
+    WHERE o.order_delivered_customer_date IS NOT NULL
+      AND o.order_delivered_customer_date > o.order_estimated_delivery_date
+    GROUP BY c.customer_state
+    ORDER BY late_deliveries DESC, c.customer_state
+    LIMIT 10
+  expected_tables: [orders, customers]
+  ordered: true

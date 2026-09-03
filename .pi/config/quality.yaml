@@ -1,0 +1,88 @@
+# Project quality configuration for the reusable coding skills.
+# Path declared in AGENTS.md (host integration). Commands are run from
+# analytics-agent/ (the project home) unless declared otherwise.
+schema: "reusable-coding-quality"
+version: 1
+
+# Repository instruction files, in project-defined precedence order.
+project_instructions_paths:
+  - "../AGENTS.md"
+
+paths:
+  # Files or directories that must not be changed without explicit authorization.
+  protected:
+    - "db/init/"
+  # Generated or vendored content. Changes require the configured project process.
+  generated:
+    - "uv.lock"
+
+commands:
+  setup:
+    - name: "sync-deps"
+      command: "uv sync"
+      working_directory: "analytics-agent"
+      timeout_seconds: 600
+      required: true
+
+  format_check:
+    - name: "ruff-format-check"
+      command: "uv run ruff format --check ."
+      working_directory: "analytics-agent"
+      timeout_seconds: 300
+      required: true
+
+  lint:
+    - name: "ruff-lint"
+      command: "uv run ruff check ."
+      working_directory: "analytics-agent"
+      timeout_seconds: 300
+      required: true
+
+  focused_test:
+    - name: "pytest-focused"
+      command: "uv run pytest"
+      working_directory: "analytics-agent"
+      timeout_seconds: 600
+      required: false
+
+  full_test:
+    - name: "pytest-full"
+      command: "uv run pytest"
+      working_directory: "analytics-agent"
+      timeout_seconds: 1800
+      required: true
+
+  coverage:
+    - name: "pytest-coverage"
+      command: "uv run pytest --cov=app --cov-report=term-missing"
+      working_directory: "analytics-agent"
+      timeout_seconds: 1800
+      required: true
+
+  final_gate:
+    - name: "final-gate"
+      command: "uv run ruff format --check . && uv run ruff check . && uv run pytest"
+      working_directory: "analytics-agent"
+      timeout_seconds: 2400
+      required: true
+
+coverage:
+  # Measure new or changed executable code.
+  scope: "changed_code"
+  line: 100
+  branch: 100
+  exclusions: []
+
+policies:
+  no_threshold_reduction: true
+  no_test_weakening: true
+  no_silent_suppressions: true
+  no_unrelated_changes: true
+  fail_on_required_check_failure: true
+
+report:
+  statuses:
+    - "passed"
+    - "failed"
+    - "not_run"
+    - "unavailable"

@@ -1,0 +1,62 @@
+[project]
+name = "mcp-analytics-demo"
+version = "0.1.0"
+description = "An MCP analytics server over the Olist e-commerce dataset"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "mcp[cli]>=1.27.2,<2.0.0",
+    "asyncpg>=0.30.0",
+    "pydantic-settings>=2.7.0",
+    "python-dotenv>=1.2.0",
+    "sqlparse>=0.5.0",
+    "fastembed>=0.8.0",
+    "langgraph>=1.2.11",
+    "langfuse>=4.14.5",
+    "langchain-mcp-adapters>=0.3.2",
+    "langchain>=1.3.17",
+    "pyyaml>=6.0.3",
+]
+
+[project.scripts]
+mcp-analytics-server = "app.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.9.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle
+    "F",      # pyflakes
+    "I",      # isort
+    "UP",     # modern Python
+    "B",      # bugbear
+    "SIM",    # suspicious/needlessly complex code
+    "C4",     # unnecessary comprehensions
+    "RUF",    # Ruff-specific
+    "PLC0415",# imports should generally be at top level
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

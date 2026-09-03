@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.env
+*.py[cod]
+
+# Evaluation run output (reports from scripts/run_evaluation.py) is local
+# run data, not version-controlled source.
+evaluation_results/
+
+# Source data CSVs are intentionally committed so that `docker compose up`
+# works on a fresh clone (db/init loads from data/olist). Exceptions:
+!data/olist/
+!data/olist/*.csv

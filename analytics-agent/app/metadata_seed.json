@@ -1,0 +1,74 @@
+{
+  "tables": {
+    "customers": {
+      "description": "One row per unique customer identifier. Stores who placed orders, their city, state and zip prefix.",
+      "keywords": ["customer", "buyer", "person", "city", "state", "location"]
+    },
+    "sellers": {
+      "description": "One row per seller that lists products on the marketplace. Includes location (city, state, zip prefix).",
+      "keywords": ["seller", "vendor", "merchant", "supplier", "location"]
+    },
+    "products": {
+      "description": "One row per product. Includes product category and physical attributes (weight and dimensions).",
+      "keywords": ["product", "item", "goods", "category", "dimension", "weight"]
+    },
+    "product_category_translation": {
+      "description": "Translates Portuguese product category names to English. Join to products on product_category_name.",
+      "keywords": ["category", "translation", "english", "product type"]
+    },
+    "orders": {
+      "description": "One row per customer order. Includes order status, purchase timestamp, approval timestamp and delivery timestamps.",
+      "keywords": ["order", "purchase", "transaction", "status", "delivery", "date"]
+    },
+    "order_items": {
+      "description": "One row per item within an order. Links an order to a product and seller, with unit price and freight value.",
+      "keywords": ["item", "unit price", "revenue", "sales", "money", "freight", "quantity"]
+    },
+    "order_payments": {
+      "description": "One row per payment instalment of an order. Includes payment type, number of instalments and value.",
+      "keywords": ["payment", "payments", "value", "instalment", "credit card", "boleto"]
+    },
+    "order_reviews": {
+      "description": "One row per customer review of an order. Includes a 1-5 review score and optional comment text.",
+      "keywords": ["review", "rating", "score", "satisfaction", "feedback", "comment"]
+    },
+    "geolocation": {
+      "description": "Geolocation (lat/long, city, state) keyed by zip prefix. Used as a dimensional lookup; has no unique key.",
+      "keywords": ["geolocation", "latitude", "longitude", "coordinates", "city", "state"]
+    }
+  },
+  "columns": {
+    "order_items.price": {
+      "description": "Unit price in BRL for one item line, excluding freight.",
+      "keywords": ["price", "revenue", "sales", "money", "brl", "value"]
+    },
+    "order_items.freight_value": {
+      "description": "Freight/shipping charge in BRL for the item line.",
+      "keywords": ["freight", "shipping", "cost", "brl", "money"]
+    },
+    "orders.order_status": {
+      "description": "Current lifecycle status of the order (created, approved, shipped, delivered, canceled, unavailable, ...).",
+      "keywords": ["status", "state", "lifecycle", "delivered", "canceled"]
+    },
+    "orders.order_purchase_timestamp": {
+      "description": "When the customer placed the order.",
+      "keywords": ["purchase date", "order date", "time", "timestamp", "when"]
+    },
+    "orders.order_estimated_delivery_date": {
+      "description": "Estimated delivery date promised to the customer.",
+      "keywords": ["delivery", "estimated", "date", "promise"]
+    },
+    "order_reviews.review_score": {
+      "description": "Customer satisfaction score from 1 (worst) to 5 (best).",
+      "keywords": ["rating", "score", "satisfaction", "quality", "1 to 5"]
+    },
+    "order_payments.payment_value": {
+      "description": "Monetary value of one payment instalment.",
+      "keywords": ["payment", "value", "revenue", "money", "brl"]
+    },
+    "order_payments.payment_type": {
+      "description": "Payment method used (credit_card, boleto, voucher, debit_card, not_defined).",
+      "keywords": ["payment method", "credit_card", "boleto", "debit_card", "voucher"]
+    }
+  }
+}
