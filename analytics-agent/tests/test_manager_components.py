@@ -32,6 +32,7 @@ from app.manager.state import ManagerState, ManagerStatus
 def test_manager_status_values() -> None:
     assert {s.value for s in ManagerStatus} == {
         "decomposing",
+        "retrying",
         "running_sub_analyses",
         "synthesizing",
         "completed",

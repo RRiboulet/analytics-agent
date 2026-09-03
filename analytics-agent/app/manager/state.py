@@ -16,6 +16,7 @@ class ManagerStatus(StrEnum):
     """Observable status of a single manager run (PLAN M7 workflow)."""
 
     DECOMPOSING = "decomposing"
+    RETRYING = "retrying"
     RUNNING_SUB_ANALYSES = "running_sub_analyses"
     SYNTHESIZING = "synthesizing"
     COMPLETED = "completed"
@@ -25,9 +26,13 @@ class ManagerStatus(StrEnum):
 class ManagerState(TypedDict, total=False):
     request: str
     # Validated decomposition (1..4 sub-questions, deduplicated) or the error
-    # that made the request undecomposable.
+    # that made the request undecomposable. ``llm_error`` carries a failed
+    # decompose model call (timeout/transport/HTTP/rate limit) and is retried
+    # bounded; ``decomposition_error`` is unusable model output, which fails
+    # immediately (deterministic output does not improve on retry).
     sub_questions: list[str]
     decomposition_error: str
+    llm_error: str
     # Evidence accumulated from the analyst sub-runs, in execution order.
     evidence: list[EvidenceRecord]
     # Per-sub-question failures; sub-analysis failure is recorded and the run
@@ -36,3 +41,5 @@ class ManagerState(TypedDict, total=False):
     # The synthesized report (M7.3), grounded only in the evidence records.
     report: str
     status: ManagerStatus
+    # Decompose retry counter (bounded by ManagerServices.max_attempts).
+    attempts: int
