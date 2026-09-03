@@ -794,6 +794,19 @@ Stage A — groundwork (deliver first):
 
 * M7.1 — `ManagerState`, `EvidenceRecord`, decompose LLM call + validation
   (non-empty, deduped, ≤4 sub-questions, table-name list as schema hint).
+  Status: complete. New `app/manager/` package: `state.py` (`ManagerState`,
+  `ManagerStatus` mirroring the agent's state conventions), `evidence.py`
+  (`EvidenceRecord` + `from_agent_state()` factory over the M4 agent's public
+  state — bounded SQL, actual rows, answer, error precedence as reported by
+  the entrypoint), `llm.py` (`ManagerLLM` protocol, `ManagerLLMClient`
+  extending the agent's `LLMClient` to share transport/auth/traced-runnable
+  plumbing, `FakeManagerLLM`), `decompose.py` (deterministic
+  `parse_sub_questions` — strips fences/bullets/numbering, drops orphan
+  markers, order-preserving dedupe, hard cap `MAX_SUB_QUESTIONS = 4` per D009;
+  `DecompositionError` for unusable output, `LLMError` propagates unchanged —
+  and the `decompose_request` call+validate seam for M7.2). `app/agent/`
+  unchanged. Tests: `tests/test_manager_components.py` (23 tests); all
+  `app/manager` modules at 100% line + branch coverage.
 * M7.2 — orchestration graph: decompose → sequential sub-runs → evidence
   accumulation. Sub-analysis failure is recorded and the run continues;
   all sub-analyses failing fails the manager cleanly.
@@ -981,8 +994,11 @@ Completed:
 
 Next:
 
-* **M7 Stage A** — M7.1–M7.4: manager groundwork (decompose → sub-analyses →
-  grounded report, CLI + tracing).
+* **M7.2** — orchestration graph: decompose → sequential analyst sub-runs →
+  evidence accumulation (sub-analysis failure recorded, all failing ⇒
+  manager fails cleanly).
+* **M7 Stage A** — then M7.3 (synthesis + deterministic groundedness check)
+  and M7.4 (CLI/`run()` + manager-level trace spans).
 * **M7 Stage B** — M7.5–M7.6: bounded follow-up round, evaluation extension.
 
 # 18. M1 Status & Decisions
