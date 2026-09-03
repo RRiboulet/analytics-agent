@@ -16,6 +16,9 @@ mkdir -p /home/vscode/.pi/agent/themes
 cp /workspace/.devcontainer/pi/themes/kokomi-theme.json /home/vscode/.pi/agent/themes/kokomi-theme.json
 echo '{"theme": "kokomi-theme"}' > /home/vscode/.pi/agent/settings.json
 
+# Copy the local model config for pi
+cp /workspace/.devcontainer/pi/models.json /home/vscode/.pi/agent/models.json
+
 # --- permissions ---
 sudo chown -R vscode:vscode /home/vscode/.pi
 sudo chown -R vscode:vscode /workspace
@@ -28,4 +31,4 @@ docker compose -f docker-compose.yml up -d postgres
 sleep 8
 curl -s http://localhost:5432/ || true
 echo
-echo 'Factory Data MCP demo ready: MCP on http://localhost:8000/mcp, Postgres on http://localhost:5432/'
+echo 'Analytics Agent ready: MCP on http://localhost:8000/mcp, Postgres on http://localhost:5432/'
