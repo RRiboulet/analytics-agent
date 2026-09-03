@@ -28,7 +28,7 @@ import json
 from pathlib import Path
 
 from app.agent.capabilities import MCPCapabilities
-from app.agent.llm import LLMClient
+from app.agent.llm import create_llm
 from app.agent.tracing import AgentTracer
 from app.config import get_settings
 from app.evaluation.dataset import DIFFICULTIES, DatasetError, load_dataset, select_cases
@@ -90,7 +90,7 @@ async def _main(argv: list[str] | None = None) -> None:
         raise SystemExit(f"case selection failed: {error}") from error
 
     settings = get_settings()
-    llm = LLMClient()
+    llm = create_llm()
     capabilities = MCPCapabilities()
     tracer = AgentTracer()
     runner = EvaluationRunner(

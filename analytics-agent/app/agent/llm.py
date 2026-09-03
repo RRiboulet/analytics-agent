@@ -91,11 +91,20 @@ class LLMClient:
         timeout_seconds: float | None = None,
         max_tokens: int | None = None,
         answer_max_tokens: int | None = None,
+        api_key: str | None = None,
         transport: Any | None = None,
     ) -> None:
         settings = get_settings()
         self.base_url = (base_url or settings.llm_base_url).rstrip("/")
         self.model = model or settings.llm_model
+        # Optional bearer token (e.g. OpenRouter). When unset no Authorization
+        # header is sent, so the default local llama.cpp path is unchanged.
+        self.api_key = api_key
+        self._headers: dict[str, str] = {}
+        if api_key:
+            self._headers["Authorization"] = f"Bearer {api_key}"
+            # OpenRouter attribution header (optional, harmless elsewhere).
+            self._headers["X-Title"] = "analytics-agent"
         self.timeout_seconds = timeout_seconds or settings.llm_timeout_seconds
         self.max_tokens = max_tokens or settings.llm_max_tokens
         # SQL generation may need more tokens (chain-of-thought + SQL); the
@@ -114,7 +123,9 @@ class LLMClient:
         client = httpx.AsyncClient(transport=self._transport)
         try:
             try:
-                resp = await client.post(f"{self.base_url}/chat/completions", json=payload, **opts)
+                resp = await client.post(
+                    f"{self.base_url}/chat/completions", json=payload, headers=self._headers, **opts
+                )
             except httpx.TimeoutException as error:
                 raise LLMError(
                     f"LLM request timed out after {self.timeout_seconds:g}s: {error}"
@@ -173,6 +184,32 @@ class LLMClient:
             return await self._complete(system, prompt, max_tokens=max_tokens)
 
         return await RunnableLambda(_invoke, name=run_name).ainvoke(user)
+
+
+def create_llm() -> LLMClient:
+    """Build the LLM client selected by ``LLM_PROVIDER``.
+
+    * ``llamacpp`` (default) — the local OpenAI-compatible server configured
+      by ``LLM_BASE_URL`` / ``LLM_MODEL``, no authentication.
+    * ``openrouter`` — the hosted OpenRouter API configured by
+      ``OPENROUTER_BASE_URL`` / ``OPENROUTER_MODEL``, authenticated with the
+      required ``OPENROUTER_API_KEY``.
+
+    Shared per-call settings (timeouts, token caps) apply to both providers.
+    Misconfiguration (unknown provider, missing API key) raises ``ValueError``
+    so callers fail fast at startup instead of mid-run.
+    """
+
+    settings = get_settings()
+    if settings.llm_provider == "openrouter":
+        if not settings.openrouter_api_key:
+            raise ValueError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter")
+        return LLMClient(
+            base_url=settings.openrouter_base_url,
+            model=settings.openrouter_model,
+            api_key=settings.openrouter_api_key,
+        )
+    return LLMClient()
 
 
 @dataclass

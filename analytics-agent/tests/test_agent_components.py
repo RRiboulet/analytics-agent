@@ -10,14 +10,14 @@ import httpx
 import pytest
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.agent import entrypoint
 from app.agent.capabilities import MCPCapabilities, parse_tool_result
 from app.agent.graph import AgentServices, build_graph
-from app.agent.llm import FakeLLM, LLMClient, LLMError, _request_payload
+from app.agent.llm import FakeLLM, LLMClient, LLMError, _request_payload, create_llm
 from app.agent.tracing import PROJECT_ENV_PATH, AgentTracer, callbacks_for
-from app.config import Settings
+from app.config import Settings, get_settings
 
 # ---------------------------------------------------------------------------
 # Entrypoint CLI / run_agent
@@ -47,7 +47,7 @@ async def test_run_agent_with_fake_components(monkeypatch) -> None:
         async def close(self):  # type: ignore[no-untyped-def]
             pass
 
-    monkeypatch.setattr(entrypoint, "LLMClient", FakeLLM)
+    monkeypatch.setattr(entrypoint, "create_llm", FakeLLM)
     monkeypatch.setattr(entrypoint, "MCPCapabilities", FakeCaps)
     res = await entrypoint.run_agent("Q")
     assert res.status == "completed"
@@ -70,7 +70,7 @@ async def test_run_agent_surfaces_retrieval_error(monkeypatch) -> None:
         async def close(self):  # type: ignore[no-untyped-def]
             pass
 
-    monkeypatch.setattr(entrypoint, "LLMClient", FakeLLM)
+    monkeypatch.setattr(entrypoint, "create_llm", FakeLLM)
     monkeypatch.setattr(entrypoint, "MCPCapabilities", FailingDiscovery)
     res = await entrypoint.run_agent("Q")
     assert res.status == "failed"
@@ -98,7 +98,7 @@ async def test_run_agent_degrades_gracefully_when_search_fails(monkeypatch) -> N
         async def close(self):  # type: ignore[no-untyped-def]
             pass
 
-    monkeypatch.setattr(entrypoint, "LLMClient", FakeLLM)
+    monkeypatch.setattr(entrypoint, "create_llm", FakeLLM)
     monkeypatch.setattr(entrypoint, "MCPCapabilities", SearchFailsDiscovery)
     res = await entrypoint.run_agent("Q")
     assert res.status == "completed"
@@ -278,6 +278,100 @@ def test_request_payload_shape() -> None:
     capped, _ = _request_payload("m", "sys", "usr", timeout=1.0, max_tokens=4096)
     assert capped["max_tokens"] == 4096
     assert opts == {"timeout": 1.0}
+
+
+# ---------------------------------------------------------------------------
+# LLM provider selection (llamacpp default / openrouter)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _reset_settings_cache():
+    """Isolate env-driven get_settings() (lru_cached) for provider tests."""
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()  # rebuilt from the restored env on next call
+
+
+def test_create_llm_llamacpp_is_the_default(monkeypatch, _reset_settings_cache) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "llamacpp")
+    monkeypatch.setenv("LLM_BASE_URL", "http://llamacpp:8080/v1")
+    monkeypatch.setenv("LLM_MODEL", "gemma-4")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    client = create_llm()
+    assert isinstance(client, LLMClient)
+    assert client.base_url == "http://llamacpp:8080/v1"
+    assert client.model == "gemma-4"
+    assert client.api_key is None  # local path stays unauthenticated
+
+
+def test_create_llm_openrouter_uses_openrouter_settings(monkeypatch, _reset_settings_cache) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+    client = create_llm()
+    assert client.base_url == "https://openrouter.ai/api/v1"
+    assert client.model == "openai/gpt-4o-mini"
+    assert client.api_key == "sk-test"
+
+
+def test_create_llm_openrouter_requires_api_key(monkeypatch, _reset_settings_cache) -> None:
+    # An empty env var beats a developer's project .env (pydantic-settings
+    # precedence), making the test deterministic even when OPENROUTER_API_KEY
+    # is present in .env; the factory must treat an empty key as missing.
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        create_llm()
+
+
+def test_settings_reject_unknown_provider(monkeypatch, _reset_settings_cache) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "ollama-cloud")
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_main_cli_reports_configuration_error(monkeypatch) -> None:
+    """A misconfigured provider fails the CLI fast with a clean message."""
+
+    async def failing(_question: str) -> Any:
+        raise ValueError("OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter")
+
+    monkeypatch.setattr(entrypoint, "run_agent", failing)  # type: ignore[attr-defined]
+    with pytest.raises(SystemExit, match="Configuration error"):
+        entrypoint.main(["Q"])
+
+
+@pytest.mark.asyncio
+async def test_llm_client_sends_auth_headers_only_with_api_key() -> None:
+    captured: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["auth"] = request.headers.get("Authorization")
+        captured["title"] = request.headers.get("X-Title")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "SELECT 1"}}]})
+
+    with_key = LLMClient(
+        base_url="http://llm/v1",
+        model="m",
+        timeout_seconds=5,
+        api_key="sk-test",
+        transport=httpx.MockTransport(handler),
+    )
+    await with_key.generate_sql("q", "meta", "schema")
+    assert captured["auth"] == "Bearer sk-test"
+    assert captured["title"] == "analytics-agent"
+
+    captured.clear()
+    without_key = LLMClient(
+        base_url="http://llm/v1",
+        model="m",
+        timeout_seconds=5,
+        transport=httpx.MockTransport(handler),
+    )
+    await without_key.generate_sql("q", "meta", "schema")
+    assert captured["auth"] is None  # no auth header on the local path
+    assert captured["title"] is None
 
 
 # ---------------------------------------------------------------------------

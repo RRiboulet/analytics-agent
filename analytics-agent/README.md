@@ -83,10 +83,32 @@ The query tool is intended for read-only analysis. A client should use the disco
 
 ## Run the analytics agent (M4)
 
-The agent is a standalone consumer of the MCP server. It connects to the local LLM
-(OpenAI-compatible `LLM_BASE_URL`/`LLM_MODEL`, defaulting to the host's
-llama.cpp server on `http://host.docker.internal:8080/v1` with model `gemma-4`,
-which must match the `--alias` of the running llama-server) and to the running MCP server, then runs the LangGraph workflow.
+The agent is a standalone consumer of the MCP server. It connects to the configured LLM and to the running MCP server, then runs the LangGraph workflow.
+
+### Choose the LLM provider (llama.cpp or OpenRouter)
+
+`LLM_PROVIDER` selects the backend the agent runs on. Both configurations can stay in `.env` simultaneously; the provider picks the active one.
+
+**`llamacpp` (default)** — local OpenAI-compatible server:
+
+```env
+LLM_PROVIDER=llamacpp
+LLM_BASE_URL=http://host.docker.internal:8080/v1
+LLM_MODEL=gemma-4   # must match the --alias of the running llama-server
+```
+
+**`openrouter`** — hosted OpenRouter API (OpenAI-compatible, bearer-authenticated):
+
+```env
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=<key from https://openrouter.ai/keys>
+OPENROUTER_MODEL=openai/gpt-4o-mini   # any model id from https://openrouter.ai/models
+# OPENROUTER_BASE_URL=https://openrouter.ai/api/v1  # override only if needed
+```
+
+With `LLM_PROVIDER=openrouter`, requests go to `{OPENROUTER_BASE_URL}/chat/completions` with `Authorization: Bearer <OPENROUTER_API_KEY>`. A missing key fails fast at startup with a clean `Configuration error` instead of a traceback. The shared per-call settings (`LLM_TIMEOUT_SECONDS`, `LLM_MAX_TOKENS`, `LLM_ANSWER_MAX_TOKENS`) apply to both providers — a hosted model is much faster than a local CPU-served one, so a shorter timeout is safe. Retries, error handling, read-only safety, and Langfuse tracing behave identically on both providers.
+
+**Privacy note:** with `openrouter`, analytical questions, generated SQL and query results are sent to OpenRouter's SaaS (third-party processing). The `llamacpp` path keeps everything local. Switching between them is a one-line `.env` change.
 
 With the MCP server running (step 5 above), ask a question:
 

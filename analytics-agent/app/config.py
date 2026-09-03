@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -71,6 +72,24 @@ class Settings(BaseSettings):
     # llama.cpp exposes the model under the name given by --alias, not the GGUF
     # filename. The server below is started with --alias gemma-4.
     llm_model: str = Field(default="gemma-4", validation_alias="LLM_MODEL")
+    # Which LLM backend the agent uses. "llamacpp" (default) keeps the local
+    # OpenAI-compatible server configuration (LLM_BASE_URL/LLM_MODEL, no auth);
+    # "openrouter" switches to the hosted OpenRouter API, which requires
+    # OPENROUTER_API_KEY and uses OPENROUTER_MODEL. Both configurations stay
+    # in .env simultaneously; the provider selects which one is active.
+    llm_provider: Literal["llamacpp", "openrouter"] = Field(
+        default="llamacpp", validation_alias="LLM_PROVIDER"
+    )
+    # OpenRouter serves an OpenAI-compatible API at this base URL.
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1", validation_alias="OPENROUTER_BASE_URL"
+    )
+    # Secret: read from the environment/.env only; never logged or echoed in
+    # error messages. Required iff llm_provider is "openrouter".
+    openrouter_api_key: str | None = Field(default=None, validation_alias="OPENROUTER_API_KEY")
+    # OpenRouter model id (e.g. "openai/gpt-4o-mini",
+    # "meta-llama/llama-3.3-70b-instruct").
+    openrouter_model: str = Field(default="openai/gpt-4o-mini", validation_alias="OPENROUTER_MODEL")
     llm_timeout_seconds: float = Field(default=300.0, validation_alias="LLM_TIMEOUT_SECONDS", gt=0)
     # Cap per-generation output tokens. This matters on servers started with
     # --reasoning on, where the model spends tokens on chain-of-thought before

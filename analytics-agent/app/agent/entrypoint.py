@@ -1,7 +1,8 @@
 """Programmatic ``run_agent`` and the ``python -m app.agent`` CLI.
 
 The agent is a standalone consumable: it connects to the running MCP server as
-its database boundary and to the configured local LLM, runs the LangGraph
+its database boundary and to the configured LLM (local llama.cpp or hosted
+OpenRouter, selected by ``LLM_PROVIDER``), runs the LangGraph
 workflow, and returns the grounded answer. Tracing is fail-open (Langfuse only
 when a public key is configured).
 """
@@ -14,7 +15,7 @@ from typing import Any
 
 from app.agent.capabilities import MCPCapabilities
 from app.agent.graph import AgentServices, build_graph
-from app.agent.llm import LLMClient
+from app.agent.llm import create_llm
 from app.agent.state import AgentState
 from app.agent.tracing import AgentTracer
 from app.config import get_settings
@@ -57,7 +58,7 @@ async def _run_question(
 async def run_agent(question: str) -> RunResult:
     """Run the analytics agent end-to-end and return a concise result."""
     settings = get_settings()
-    llm = LLMClient()
+    llm = create_llm()
     capabilities = MCPCapabilities()
     tracer = AgentTracer()
     try:
@@ -106,7 +107,12 @@ def main(argv: list[str] | None = None) -> None:
     if not args:
         raise SystemExit("Usage: python -m app.agent [--json] '<question>'")
     question, as_json = _parse_args(args)
-    result = asyncio.run(run_agent(question))
+    try:
+        result = asyncio.run(run_agent(question))
+    except ValueError as error:
+        # Configuration errors (e.g. LLM_PROVIDER=openrouter without an API
+        # key) fail fast with a clean message instead of a traceback.
+        raise SystemExit(f"Configuration error: {error}") from error
     if as_json:
         print(
             json.dumps(

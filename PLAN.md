@@ -891,6 +891,14 @@ Reason: the agent's SQL generation/analysis steps use a discrete-model-call
 pattern (no open tool-calling loop within the model) for determinism; the served
 model is ``gemma-4`` (matching the llama.cpp ``--alias``) over ``LLM_BASE_URL``.
 
+Amendment: ``LLM_PROVIDER`` (default ``llamacpp``) additionally selects the
+hosted **OpenRouter** API (``OPENROUTER_API_KEY``/``OPENROUTER_MODEL``,
+OpenAI-compatible, bearer-authenticated) as an alternative backend; both
+configurations coexist in ``.env``. Trade-off accepted for development: with
+``openrouter``, questions, generated SQL and query results are sent to a
+third-party SaaS (analogous to D005's Langfuse Cloud tradeoff); switching back
+to the fully local path is a one-line env change.
+
 ### D008 — Agent Tool Surface (M4)
 
 Decision: no agent-as-MCP tool in M4; expose the agent via CLI + ``run()`` only.
