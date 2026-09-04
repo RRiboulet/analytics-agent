@@ -140,8 +140,15 @@ class LLMClient:
                 ) from error
             try:
                 data = resp.json()
-                return data["choices"][0]["message"]["content"].strip()
-            except (KeyError, IndexError, TypeError, ValueError) as error:
+                content = data["choices"][0]["message"]["content"]
+                if not isinstance(content, str):
+                    # Some OpenAI-compatible endpoints (reasoning models,
+                    # content-filtered or truncated completions) return
+                    # null/non-text content. Surface it as a typed, retryable
+                    # LLMError instead of crashing with an AttributeError.
+                    raise LLMError(f"LLM returned no usable text content (content={content!r}).")
+                return content.strip()
+            except (KeyError, IndexError, TypeError, ValueError, AttributeError) as error:
                 raise LLMError(f"Unexpected LLM response: {error}") from error
         finally:
             await client.aclose()

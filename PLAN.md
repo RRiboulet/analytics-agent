@@ -1123,3 +1123,10 @@ Tool rename (user-requested, M2-aligned):
 * `query` surfaces real SQL execution errors (missing column/table) instead of
   masking them as an unavailable database, while genuine infrastructure failures
   still return the generic message. An agent can now self-correct on SQL errors.
+* SQL safety layer accepts CTE queries: sqlparse tokenizes a leading `WITH` as
+  `Keyword.CTE` (a keyword subtype), which the exact `ttype` check rejected as
+  "Only SELECT queries are allowed" — legitimate read-only CTEs (e.g. window
+  function / MoM-change queries) were blocked while plain `SELECT`+`CASE`
+  passed. The gate now checks the DML/Keyword/CTE family explicitly and still
+  verifies the actual leading word, so quoted identifiers named `with` remain
+  rejected and multi-statement/mutation guards are unchanged.

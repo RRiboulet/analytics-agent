@@ -546,6 +546,42 @@ async def test_llm_client_translates_malformed_response_to_llm_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_llm_client_translates_null_content_to_llm_error() -> None:
+    # Some OpenAI-compatible endpoints return ``message.content: null``
+    # (reasoning-only or truncated completions). This previously crashed the
+    # whole manager run with `AttributeError: 'NoneType' object has no
+    # attribute 'strip'`; it must surface as a typed, retryable LLMError.
+    def null_content_handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": None}}]})
+
+    client = LLMClient(
+        base_url="http://llm/v1",
+        model="gemma",
+        timeout_seconds=5,
+        transport=httpx.MockTransport(null_content_handler),
+    )
+    with pytest.raises(LLMError) as excinfo:
+        await client.generate_sql("q", "meta", "schema")
+    assert "no usable text content" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_llm_client_translates_non_text_content_to_llm_error() -> None:
+    def list_content_handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": [{"type": "text"}]}}]})
+
+    client = LLMClient(
+        base_url="http://llm/v1",
+        model="gemma",
+        timeout_seconds=5,
+        transport=httpx.MockTransport(list_content_handler),
+    )
+    with pytest.raises(LLMError) as excinfo:
+        await client.generate_sql("q", "meta", "schema")
+    assert "no usable text content" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
 async def test_llm_client_appends_prior_error_to_prompt() -> None:
     """On retry the real client feeds the previous attempt's error back to the model."""
     seen: dict[str, dict] = {}
