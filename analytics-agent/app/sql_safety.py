@@ -26,7 +26,14 @@ def validate_and_bound_query(sql: str, max_rows: int) -> str:
         raise UnsafeQueryError("The SQL query must not be blank.")
 
     first = meaningful[0]
-    if first.ttype not in (DML, Keyword) or first.value.upper() not in {"SELECT", "WITH"}:
+    # "WITH" is tokenized by sqlparse as Keyword.CTE, a subtype of Keyword
+    # (SELECT is Keyword.DML). Check the keyword family (DML, Keyword,
+    # Keyword.CTE) explicitly, then verify the actual word so a quoted
+    # identifier or column literally named "with"/"select" is not accepted.
+    if first.ttype not in (DML, Keyword, Keyword.CTE) or first.value.upper() not in {
+        "SELECT",
+        "WITH",
+    }:
         raise UnsafeQueryError("Only SELECT queries are allowed.")
 
     if re.search(
