@@ -141,7 +141,7 @@ def build_manager_graph(services: ManagerServices) -> Any:
             )
         except LLMError as error:
             return {**update, "llm_error": str(error), "report": None}
-        violation = groundedness_violation(report, state["evidence"])
+        violation = groundedness_violation(report, state["evidence"], task=state.get("request", ""))
         if violation:
             # Never ship a fabricated report: on a violation the report is
             # not stored and the run fails. Deterministic output at

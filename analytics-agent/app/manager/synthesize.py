@@ -15,6 +15,10 @@ Strictness notes (deliberate, mirroring the M6 judges' type-strictness):
   number in something that merely *contains* digits.
 * US number formatting is assumed when parsing the report ("1,234.56");
   thousands separators are stripped before comparison.
+* Numbers already present in the task context (the management request and
+  the sub-questions) are inputs, not claims: the manager supplied them, so a
+  report echoing a time window ("2018"), threshold or identifier is not
+  fabricating a measurement and needs no evidence existence proof.
 """
 
 import json
@@ -51,21 +55,29 @@ def collect_evidence_values(evidence: list[EvidenceRecord]) -> list[float]:
     return values
 
 
-def groundedness_violation(report: str, evidence: list[EvidenceRecord]) -> str | None:
+def groundedness_violation(
+    report: str, evidence: list[EvidenceRecord], task: str = ""
+) -> str | None:
     """Return a violation message if the report is not fully grounded.
 
     A report without numbers is trivially grounded. Every number extracted
     from the report must match at least one evidence value within
-    ``RELATIVE_TOLERANCE`` (identical semantics to the M6 judges).
+    ``RELATIVE_TOLERANCE`` (identical semantics to the M6 judges) or one
+    number already present in the task context — the ``task`` text plus the
+    sub-questions of the evidence records. Numbers the manager supplied are
+    inputs, not claims: the agent did not derive them, so echoing them in
+    the report is not fabrication.
     """
     values = collect_evidence_values(evidence)
+    context_text = task + "\n" + "\n".join(record.sub_question for record in evidence)
+    values += extract_report_numbers(context_text)
     for number in extract_report_numbers(report):
         if not any(
             abs(number - value) <= RELATIVE_TOLERANCE * max(1.0, abs(value)) for value in values
         ):
             return (
                 f"Report number {number} does not appear in any evidence result set "
-                f"(groundedness violation)."
+                f"or task context (groundedness violation)."
             )
     return None
 

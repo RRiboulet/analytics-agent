@@ -106,6 +106,53 @@ def test_strings_and_bools_never_ground_numbers() -> None:
     assert groundedness_violation("In 2023 there were 1 cases.", evidence) is not None
 
 
+def test_task_context_years_are_inputs_not_claims() -> None:
+    evidence = [_evidence([{"revenue": 10.5}])]
+    report = "In the first half of 2018, revenue was 10.5."
+    assert groundedness_violation(report, evidence, task="first half of 2018") is None
+
+
+def test_sub_question_context_is_exempt() -> None:
+    record = EvidenceRecord(
+        sub_index=0,
+        sub_question="Revenue per month for the first half of 2018?",
+        rows=[{"revenue": 10.5}],
+    )
+    assert groundedness_violation("In 2018 revenue was 10.5.", [record]) is None
+
+
+def test_context_does_not_exempt_fabricated_numbers() -> None:
+    evidence = [_evidence([{"revenue": 10.5}])]
+    violation = groundedness_violation(
+        "In 2018 revenue was 999.99.", evidence, task="first half of 2018"
+    )
+    assert violation is not None
+    assert "999.99" in violation
+    assert "or task context" in violation
+
+
+def test_non_context_year_still_violates() -> None:
+    evidence = [_evidence([{"revenue": 10.5}])]
+    assert (
+        groundedness_violation("In 2099 revenue rose.", evidence, task="first half of 2018")
+        is not None
+    )
+
+
+def test_context_exemption_keeps_evidence_matching() -> None:
+    evidence = [_evidence([{"revenue": 1000.0}])]
+    # 1000.001 is evidence-grounded, 2018 is context-grounded: both pass.
+    assert (
+        groundedness_violation("In 2018 revenue was 1000.001.", evidence, task="first half of 2018")
+        is None
+    )
+    # A derived-but-unstated number still fails even with a valid context year.
+    assert (
+        groundedness_violation("In 2018 revenue was 1000.01.", evidence, task="first half of 2018")
+        is not None
+    )
+
+
 def test_sign_matters_for_groundedness() -> None:
     evidence = [_evidence([{"delta": -3.5}])]
     assert groundedness_violation("The change was -3.5.", evidence) is None
@@ -220,7 +267,7 @@ class FlakySynthesisLLM(FakeManagerLLM):
         return self.report
 
 
-async def _run(llm, analyst, *, max_attempts: int = 2) -> dict:
+async def _run(llm, analyst, *, max_attempts: int = 2, request: str = "Summarize sales.") -> dict:
     services = ManagerServices(
         llm=llm,
         run_analyst=analyst,
@@ -228,7 +275,7 @@ async def _run(llm, analyst, *, max_attempts: int = 2) -> dict:
         table_names=["orders"],
     )
     graph = build_manager_graph(services)
-    return await graph.ainvoke({"request": "Summarize sales."})
+    return await graph.ainvoke({"request": request})
 
 
 async def test_grounded_report_completes_and_is_stored() -> None:
@@ -251,6 +298,35 @@ async def test_fabricated_report_fails_without_storing_it() -> None:
     assert state.get("report") is None  # never ship a fabricated report
     assert "999.99" in state["groundedness_error"]
     assert len(llm.report_calls) == 1  # deterministic violation: no retry
+
+
+async def test_grounded_report_that_echoes_task_year_completes() -> None:
+    # The report cites 10.5 (in evidence) and 2018 (only in the request and
+    # sub-question — the exact false positive that failed this run).
+    analyst = StubAnalyst({"Revenue per month in the first half of 2018?": _ok_sub_state()})
+    llm = FakeManagerLLM(
+        raw="Revenue per month in the first half of 2018?",
+        report="In the first half of 2018, revenue was 10.5.",
+    )
+    state = await _run(llm, analyst, request="Analyze sales performance in the first half of 2018.")
+
+    assert state["status"] is ManagerStatus.COMPLETED
+    assert state["report"] == "In the first half of 2018, revenue was 10.5."
+    assert state.get("groundedness_error") is None
+
+
+async def test_task_context_does_not_mask_fabrication() -> None:
+    # Same context year, but a fabricated value: the run must still fail.
+    analyst = StubAnalyst({"Revenue per month in the first half of 2018?": _ok_sub_state()})
+    llm = FakeManagerLLM(
+        raw="Revenue per month in the first half of 2018?",
+        report="In the first half of 2018, revenue was 999.99.",
+    )
+    state = await _run(llm, analyst, request="Analyze sales performance in the first half of 2018.")
+
+    assert state["status"] is ManagerStatus.FAILED
+    assert state.get("report") is None
+    assert "999.99" in state["groundedness_error"]
 
 
 async def test_transient_synthesis_llm_error_retries_into_synthesis() -> None:
