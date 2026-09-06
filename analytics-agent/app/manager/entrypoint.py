@@ -44,6 +44,10 @@ class ManagerRunResult:
     # M7.5: the bounded follow-up questions decided by the inspect stage
     # (empty when no follow-up was requested).
     follow_up_questions: list[str] = field(default_factory=list)
+    # The rejected report text behind a groundedness violation (M7.3): the
+    # run failed and no report was produced, but the attempt is kept for
+    # inspection — callers can see exactly what the model fabricated.
+    report_attempt: str | None = None
     error: str | None = None
 
 
@@ -130,6 +134,7 @@ async def run_manager(request: str, out_dir: str | Path | None = None) -> Manage
         # attempt round for each retryable stage.
         attempts=state.get("attempts", 1),
         follow_up_questions=state.get("follow_up_questions", []),
+        report_attempt=state.get("report_attempt"),
         state=state,
         error=_run_error(state),
     )
@@ -149,6 +154,7 @@ def _write_artifacts(out_dir: Path, request: str, state: ManagerState) -> None:
         "sub_analysis_errors": state.get("sub_analysis_errors", []),
         "decomposition_error": state.get("decomposition_error"),
         "groundedness_error": state.get("groundedness_error"),
+        "report_attempt": state.get("report_attempt"),
         "follow_up_questions": state.get("follow_up_questions", []),
         "follow_up_errors": state.get("follow_up_errors", []),
         "follow_up_rounds": state.get("follow_up_rounds", 0),
@@ -197,6 +203,7 @@ def main(argv: list[str] | None = None) -> None:
                     "sub_questions": result.sub_questions,
                     "follow_up_questions": result.follow_up_questions,
                     "attempts": result.attempts,
+                    "report_attempt": result.report_attempt,
                     "error": result.error,
                 },
                 indent=2,

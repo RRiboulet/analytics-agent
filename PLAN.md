@@ -832,16 +832,15 @@ Stage A — groundwork (deliver first):
   (every number in the report must appear in some evidence result set or in
   the task context — the management request and the sub-questions; numbers
   the manager supplied are inputs, not claims, so echoing a time
-  window/threshold/id from the task is not fabrication;
-  1e-6 relative tolerance reused from the M6 judges). Violation = failed run,
-  never ship a fabricated report.
+  window/threshold/id from the task is not fabrication). Violation = failed
+  run, never ship a fabricated report.
   Status: complete. `app/manager/synthesize.py` — `extract_report_numbers`
   (sign/comma/decimal tolerant, ignores digits inside words/versions),
   `collect_evidence_values` (numeric cells only; bools and strings — incl.
   ISO timestamps — never scanned, mirroring the M6 judges' type-strictness),
   `groundedness_violation(report, evidence, task="")` (evidence values plus
-  task-context numbers, 1e-6 relative tolerance reused from the M6
-  judges) and `format_evidence` (the synthesis prompt's grounding text).
+  task-context numbers) and `format_evidence` (the synthesis prompt's
+  grounding text).
   `ManagerLLM` gained `synthesize(request, evidence)`; `ManagerLLMClient`
   traces it as `synthesize_report`; the synthesis prompt forbids rounding,
   derived numbers and numbering so grounded reports pass the check.
@@ -920,6 +919,20 @@ Stage B — agentic follow-up (once Stage A is stable):
   `test_manager_components.py` status set; all manager modules at 100%
   line + branch (only the two subprocess-executed `__main__` guards, the
   documented pattern).
+  Subsequent hardening (groundedness false positive from the first manual
+  run, M7.5): the groundedness tolerance was calibrated for prose. The M6
+  1e-6 rule belongs to result-set comparison; a report written by a small
+  local model rounds regardless of the "no rounding" instruction
+  ("about 250,000" for 249,485.85), so 1e-6 rejected every rounded claim
+  and hid the real signal. Matching is now 0.5% relative OR a ±10 absolute
+  floor, plus a same-sign guard so the wide floor cannot turn a sign flip
+  ("+3.5" vs "-3.5") into "rounding". Fabrication at magnitude (999.99 vs
+  10.5; 300,000 vs 249,485.85) still fails. Also, a groundedness rejection
+  now keeps the offending report text in `report_attempt` (state,
+  `ManagerRunResult`, `evidence.json`, CLI `--json`): the report itself is
+  never shipped, but the attempt is persisted so a failure is inspectable
+  without Langfuse — a violation message naming a number that appears
+  nowhere in the evidence is not enough to debug alone.
 * M7.6 — evaluation extension: management-level scenarios in the M6 harness,
   graded structurally (decomposition validity, groundedness, completion).
 

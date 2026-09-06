@@ -94,11 +94,32 @@ def test_fabricated_number_violates() -> None:
     assert "groundedness violation" in violation
 
 
-def test_tolerance_matches_the_m6_judges_semantics() -> None:
-    evidence = [_evidence([{"revenue": 1000.0}])]
-    # Within 1e-6 relative tolerance of 1000 -> 1000.001 passes, 1000.01 fails.
-    assert groundedness_violation("Revenue 1000.001.", evidence) is None
-    assert groundedness_violation("Revenue 1000.01.", evidence) is not None
+def test_calibrated_tolerance_accepts_proportional_rounding() -> None:
+    # 0.5% relative window: "about 250,000" for the real 249,485.85 (the
+    # false positive from the M7.5 manual run) is legitimate prose rounding.
+    evidence = [_evidence([{"sales": 249485.85}])]
+    assert groundedness_violation("Sales were about 250,000.", evidence) is None
+    # "~1,002,560" for 1,002,560.03 is 0.25% — still within the window.
+    evidence = [_evidence([{"avg": 1002560.03}])]
+    assert groundedness_violation("Average deviation ~1,002,560.", evidence) is None
+
+
+def test_magnitude_fabrication_is_still_rejected() -> None:
+    # A figure far from every real row value still fails: 300,000 vs
+    # 249,485.85 is 20% off — beyond the 0.5% window and the +/-10 floor.
+    evidence = [_evidence([{"sales": 249485.85}, {"sales": 5202955.05}])]
+    assert groundedness_violation("Sales reached 300,000.", evidence) is not None
+    # The exact original failure: 250,000 claimed next to evidence of 10.5.
+    evidence = [_evidence([{"revenue": 10.5}])]
+    assert groundedness_violation("Revenue was 250,000.", evidence) is not None
+
+
+def test_absolute_floor_accepts_small_rounding() -> None:
+    # The +/-10 absolute floor: prose "about 10" maps to 10.5, but a number
+    # more than 10 away (21.5) is a different claim and still fails.
+    evidence = [_evidence([{"share": 10.5}])]
+    assert groundedness_violation("Share of about 10.", evidence) is None
+    assert groundedness_violation("Share of 21.5.", evidence) is not None
 
 
 def test_strings_and_bools_never_ground_numbers() -> None:
@@ -141,19 +162,23 @@ def test_non_context_year_still_violates() -> None:
 
 def test_context_exemption_keeps_evidence_matching() -> None:
     evidence = [_evidence([{"revenue": 1000.0}])]
-    # 1000.001 is evidence-grounded, 2018 is context-grounded: both pass.
+    # 1000.0 is evidence-grounded, 2018 is context-grounded: both pass.
     assert (
         groundedness_violation("In 2018 revenue was 1000.001.", evidence, task="first half of 2018")
         is None
     )
-    # A derived-but-unstated number still fails even with a valid context year.
+    # A derived-but-unstated number still fails even with a valid context
+    # year: 1100 is within the task window yet appears in no row (calibrated
+    # tolerance: |1100-1000| > max(0.5% of 1000, 10) = 10).
     assert (
-        groundedness_violation("In 2018 revenue was 1000.01.", evidence, task="first half of 2018")
+        groundedness_violation("In 2018 revenue was 1100.", evidence, task="first half of 2018")
         is not None
     )
 
 
 def test_sign_matters_for_groundedness() -> None:
+    # Same-sign guard: the wide +/-10 floor must not let a sign flip pass as
+    # rounding — "+3.5" is a materially different claim than "-3.5".
     evidence = [_evidence([{"delta": -3.5}])]
     assert groundedness_violation("The change was -3.5.", evidence) is None
     assert groundedness_violation("The change was 3.5.", evidence) is not None
@@ -296,8 +321,21 @@ async def test_fabricated_report_fails_without_storing_it() -> None:
 
     assert state["status"] is ManagerStatus.FAILED
     assert state.get("report") is None  # never ship a fabricated report
+    # The rejected attempt is kept so the failure is inspectable: without it
+    # a violation message naming a number that exists nowhere in the evidence
+    # would be impossible to debug (this is the M7.5 250,000 case).
+    assert state["report_attempt"] == "Revenue was 999.99."
     assert "999.99" in state["groundedness_error"]
     assert len(llm.report_calls) == 1  # deterministic violation: no retry
+
+
+async def test_grounded_report_does_not_set_report_attempt() -> None:
+    analyst = StubAnalyst({"Revenue by category?": _ok_sub_state()})
+    llm = FakeManagerLLM(raw="Revenue by category?", report="Revenue was 10.5.")
+    state = await _run(llm, analyst)
+
+    assert state["status"] is ManagerStatus.COMPLETED
+    assert state.get("report_attempt") is None  # only set on a violation
 
 
 async def test_grounded_report_that_echoes_task_year_completes() -> None:

@@ -41,6 +41,12 @@ class ManagerState(TypedDict, total=False):
     # number that appears in no evidence result set. The run fails and the
     # report is never stored — never ship a fabricated report.
     groundedness_error: str
+    # The rejected report text behind a groundedness violation. It is never
+    # returned as the report (``report`` stays None) but is kept so the
+    # failure is inspectable — evidence.json / traces — without needing
+    # Langfuse: a violation message that names a number nobody can find in
+    # the evidence is not enough to debug why the model fabricated it.
+    report_attempt: str
     # Evidence accumulated from the analyst sub-runs, in execution order.
     evidence: list[EvidenceRecord]
     # Per-sub-question failures; sub-analysis failure is recorded and the run

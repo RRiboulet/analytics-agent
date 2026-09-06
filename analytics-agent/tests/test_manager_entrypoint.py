@@ -161,6 +161,9 @@ async def test_run_manager_surfaces_groundedness_error(monkeypatch) -> None:
 
     assert result.status == "failed"
     assert result.report is None
+    # The rejected attempt is exposed programmatically (and in evidence.json)
+    # so the fabrication is inspectable without Langfuse.
+    assert result.report_attempt == "Revenue was 999.99."
     assert result.error is not None
     assert "999.99" in result.error
 
@@ -237,16 +240,20 @@ async def test_write_artifacts_failed_run_has_no_report_file(tmp_path) -> None:
         "attempts": 2,
         "sub_questions": [],
         "sub_analysis_errors": [],
-        "decomposition_error": "no sub-questions",
-        "groundedness_error": None,
+        "decomposition_error": None,
+        "groundedness_error": "report number 999.99 not grounded",
+        "report_attempt": "Revenue was 999.99.",
         "evidence": [],
     }
     entrypoint._write_artifacts(tmp_path, "Summarize sales.", state)
 
-    assert not (tmp_path / "report.md").exists()
+    assert not (tmp_path / "report.md").exists()  # never ship a fabricated report
     payload = json.loads((tmp_path / "evidence.json").read_text(encoding="utf-8"))
     assert payload["status"] == "failed"
-    assert payload["decomposition_error"] == "no sub-questions"
+    assert payload["decomposition_error"] is None
+    # The rejected attempt is persisted next to the violation message so a
+    # failed groundedness run can be debugged from the artifacts alone.
+    assert payload["report_attempt"] == "Revenue was 999.99."
 
 
 async def test_run_manager_writes_out_dir(monkeypatch, tmp_path) -> None:

@@ -242,13 +242,20 @@ def build_manager_graph(services: ManagerServices) -> Any:
         violation = groundedness_violation(report, state["evidence"], task=state.get("request", ""))
         if violation:
             # Never ship a fabricated report: on a violation the report is
-            # not stored and the run fails. Deterministic output at
-            # temperature 0 would reproduce the same violation, so no retry.
+            # not stored as the result and the run fails. Deterministic
+            # output at temperature 0 would reproduce the same violation, so
+            # there is no retry. The rejected text is kept in
+            # ``report_attempt`` (never returned as the report) so the
+            # failure is inspectable in evidence.json/traces: the whole
+            # point of this guardrail is to catch fabrication, and a
+            # violation message naming a number that exists nowhere in the
+            # evidence is not enough to debug why the model invented it.
             return {
                 **update,
                 "status": ManagerStatus.FAILED,
                 "groundedness_error": violation,
                 "report": None,
+                "report_attempt": report,
                 "llm_error": None,
             }
         return {
