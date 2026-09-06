@@ -886,6 +886,40 @@ Stage B — agentic follow-up (once Stage A is stable):
 * M7.5 — inspect node: the manager reviews findings and may request one
   bounded follow-up round (≤1 round, ≤2 queries) for anomaly investigation
   or drill-down; slots in as a conditional edge before synthesis.
+  Status: complete. The manager passes its accumulated evidence through the
+  inspect stage before synthesis (D009 Stage B): the model reviews the
+  sub-analysis evidence and may request at most 2 follow-up questions; a
+  follow-up round runs exactly once and its evidence is appended (marked
+  `is_follow_up`, numbered after the sub-analyses), so follow-up results are
+  also grounds for the report's groundedness check. Implemented:
+  `app/manager/inspect.py` — `MAX_FOLLOW_UP_QUESTIONS = 2`, `FollowUpError`,
+  deterministic `parse_follow_up_questions` (0..2, deduplicated, order-
+  preserving; empty output or an explicit `NONE`/`N/A` marker is a *valid*
+  "no follow-up" outcome — unlike decompose where an empty plan is an
+  error; more than 2 questions raises `FollowUpError`). `ManagerLLM` gained
+  `inspect(request, evidence)`; `ManagerLLMClient` traces it as
+  `inspect_follow_ups` and uses the smaller answer token cap (the decision
+  is a few lines, not a generation budget). `EvidenceRecord` gained
+  `is_follow_up`; `format_evidence` labels follow-ups distinctly so the
+  synthesis prompt tells the rounds apart. Graph: new `inspect` and
+  `run_follow_ups` nodes conditional-edge between the sub-analyses and
+  synthesis; retry routing is now explicit via a recorded `retry_stage`
+  (the shared attempt budget still spans all retryable stages).
+  Failure policy: transient `LLMError` on inspect retries bounded (shared
+  budget); on budget exhaustion, or unusable output (`FollowUpError`), the
+  stage *degrades* to no follow-up (recorded in `inspect_error`, never a
+  caller-facing error) and proceeds to synthesis — the inspect stage is
+  optional by intent and must never fail a run that already holds grounded
+  evidence; the report stays fully achievable from the sub-analyses.
+  A failing follow-up is recorded in `follow_up_errors` and the round
+  continues. `ManagerRunResult` and the `--out` artifacts and CLI now
+  surface `follow_up_questions`/`follow_up_errors`/`follow_up_rounds`/
+  `inspect_error`. Tests: `tests/test_manager_inspect.py` (31 tests:
+  parser, LLM capability, evidence labeling, graph integration incl. retry/
+  degrade/budget-sharing, run_manager e2e, artifacts, CLI) + updated
+  `test_manager_components.py` status set; all manager modules at 100%
+  line + branch (only the two subprocess-executed `__main__` guards, the
+  documented pattern).
 * M7.6 — evaluation extension: management-level scenarios in the M6 harness,
   graded structurally (decomposition validity, groundedness, completion).
 
@@ -1053,8 +1087,19 @@ Completed:
 * [x] **M4 — First LangGraph agent** — standalone `app/agent/`, read-only MCP boundary, retry recovery, bounded attempts, Langfuse fail-open tracing.
 * [x] **M5 — Observability (Langfuse)** — end-to-end run traces: nodes/state, LLM calls, MCP tool calls, retries, final answer; fail-open, flush-on-exit.
 * [x] **M6 — Evaluation** — 30-case benchmark (`data/evaluation/olist_v1.yaml`), deterministic reference-SQL judging, `app/evaluation/` (dataset/judges/runner/report), `scripts/run_evaluation.py` CLI with JSON + markdown reports.
+* [x] **M7.1 — Manager groundwork** — `app/manager/`: state, evidence records, decompose + validation (≤4 sub-questions).
+* [x] **M7.2 — Manager orchestration** — decompose → sequential sub-analyses → evidence; bounded retry; all-failed fails.
+* [x] **M7.3 — Synthesis** — grounded report + deterministic groundedness check; never ship a fabricated report.
+* [x] **M7.4 — Manager surface + observability** — `run_manager()` + CLI + `--out`, one shared capabilities/LLM client, nested Langfuse traces.
+* [x] **M7.5 — Inspect node** — one bounded follow-up round (≤1 round, ≤2 queries) decided by the model and validated deterministically; degrades (never fails) on budget exhaustion/unusable output; follow-up evidence flows into synthesis grounding.
 
 Next:
+
+* **M7 Stage A wrap-up** — first live end-to-end manager run against the
+  real LLM (manual; decompose prompt quality + groundedness false-positive
+  rate are the two open risks).
+* **M7.6** — management-level evaluation extension in the M6 harness
+  (structural grading: decomposition validity, groundedness, completion).
 
 * **M7 Stage A wrap-up** — first live end-to-end manager run against the
   real LLM (manual; decompose prompt quality + groundedness false-positive

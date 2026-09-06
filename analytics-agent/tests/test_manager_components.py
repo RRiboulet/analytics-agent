@@ -34,6 +34,7 @@ def test_manager_status_values() -> None:
         "decomposing",
         "retrying",
         "running_sub_analyses",
+        "inspecting",
         "synthesizing",
         "completed",
         "failed",

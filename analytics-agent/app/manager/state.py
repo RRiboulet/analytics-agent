@@ -18,6 +18,10 @@ class ManagerStatus(StrEnum):
     DECOMPOSING = "decomposing"
     RETRYING = "retrying"
     RUNNING_SUB_ANALYSES = "running_sub_analyses"
+    # The inspector reviews the accumulated evidence and decides whether one
+    # bounded follow-up round (<=1 round, <=2 questions, D009 Stage B) is
+    # needed before synthesis.
+    INSPECTING = "inspecting"
     SYNTHESIZING = "synthesizing"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -45,5 +49,21 @@ class ManagerState(TypedDict, total=False):
     # The synthesized report (M7.3), grounded only in the evidence records.
     report: str
     status: ManagerStatus
-    # Decompose retry counter (bounded by ManagerServices.max_attempts).
+    # Decompose retry counter (bounded by ManagerServices.max_attempts). The
+    # budget is shared by every retryable stage (decompose/inspect/synthesize)
+    # so it stays a single hard bound (D009).
     attempts: int
+    # M7.5 — bounded follow-up round:
+    # Validated follow-up questions (0..2) decided by the inspect stage, the
+    # per-follow-up analyst failures, and the round counter (a single hard
+    # bound of 1 — the graph never loops back to inspect).
+    follow_up_questions: list[str]
+    follow_up_errors: list[str]
+    follow_up_rounds: int
+    # Why the inspect stage produced no follow-ups (unusable model output or
+    # an LLM failure after the retry budget): observable, never a run error.
+    inspect_error: str
+    # Which retryable stage a retry must re-enter (decompose/inspect/
+    # synthesize), recorded by the failing node so the shared retry node can
+    # route back precisely instead of guessing.
+    retry_stage: str

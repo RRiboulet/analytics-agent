@@ -4,7 +4,9 @@ The manager composes grounded analyst runs (M7, D009): it connects to the
 running MCP server through one shared read-only ``MCPCapabilities`` instance,
 uses one ``ManagerLLMClient`` for both its own discrete calls and the analyst
 sub-runs (the client extends ``LLMClient``, so it serves both protocols), and
-runs the manager LangGraph workflow. With Langfuse credentials the whole run
+runs the manager LangGraph workflow — decompose, sub-analyses, a bounded
+follow-up round when the inspect stage requests one (M7.5), synthesize.
+With Langfuse credentials the whole run
 is traced under one manager trace: manager run → analyst sub-runs → nodes.
 Tracing stays fail-open; a ``--out`` directory persists the report and the
 evidence for inspection.
@@ -14,7 +16,7 @@ import asyncio
 import dataclasses
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +41,9 @@ class ManagerRunResult:
     evidence: list[EvidenceRecord]
     attempts: int
     state: ManagerState
+    # M7.5: the bounded follow-up questions decided by the inspect stage
+    # (empty when no follow-up was requested).
+    follow_up_questions: list[str] = field(default_factory=list)
     error: str | None = None
 
 
@@ -124,6 +129,7 @@ async def run_manager(request: str, out_dir: str | Path | None = None) -> Manage
         # Only the retry node writes 'attempts'; a clean run makes exactly 1
         # attempt round for each retryable stage.
         attempts=state.get("attempts", 1),
+        follow_up_questions=state.get("follow_up_questions", []),
         state=state,
         error=_run_error(state),
     )
@@ -143,6 +149,10 @@ def _write_artifacts(out_dir: Path, request: str, state: ManagerState) -> None:
         "sub_analysis_errors": state.get("sub_analysis_errors", []),
         "decomposition_error": state.get("decomposition_error"),
         "groundedness_error": state.get("groundedness_error"),
+        "follow_up_questions": state.get("follow_up_questions", []),
+        "follow_up_errors": state.get("follow_up_errors", []),
+        "follow_up_rounds": state.get("follow_up_rounds", 0),
+        "inspect_error": state.get("inspect_error"),
         "evidence": [dataclasses.asdict(record) for record in state.get("evidence", [])],
     }
     (out_dir / "evidence.json").write_text(
@@ -185,6 +195,7 @@ def main(argv: list[str] | None = None) -> None:
                     "report": result.report,
                     "status": result.status,
                     "sub_questions": result.sub_questions,
+                    "follow_up_questions": result.follow_up_questions,
                     "attempts": result.attempts,
                     "error": result.error,
                 },
@@ -197,6 +208,10 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Sub-analyses: {len(result.evidence)}")
     for question in result.sub_questions:
         print(f"  - {question}")
+    if result.follow_up_questions:
+        print(f"Follow-ups: {len(result.follow_up_questions)}")
+        for question in result.follow_up_questions:
+            print(f"  - {question}")
     if result.error:
         print(f"Error: {result.error}")
     print()

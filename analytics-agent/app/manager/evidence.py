@@ -32,10 +32,19 @@ class EvidenceRecord:
     rows: list[dict[str, Any]] | None = None
     answer: str | None = None
     error: str | None = None
+    # True when produced inside the M7.5 follow-up round rather than the
+    # initial decomposition; synthesis and traces use this to tell the two
+    # analyst rounds apart (D009: at most one follow-up round).
+    is_follow_up: bool = False
 
     @classmethod
     def from_agent_state(
-        cls, sub_index: int, sub_question: str, state: AgentState
+        cls,
+        sub_index: int,
+        sub_question: str,
+        state: AgentState,
+        *,
+        is_follow_up: bool = False,
     ) -> "EvidenceRecord":
         """Build an evidence record from a completed analyst run state.
 
@@ -54,4 +63,5 @@ class EvidenceRecord:
             error=(
                 state.get("llm_error") or state.get("query_error") or state.get("validation_error")
             ),
+            is_follow_up=is_follow_up,
         )

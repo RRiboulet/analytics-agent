@@ -86,7 +86,12 @@ def format_evidence(evidence: list[EvidenceRecord]) -> str:
     """Render the evidence records as the synthesis prompt's grounding text."""
     blocks: list[str] = []
     for record in evidence:
-        lines = [f"Sub-question {record.sub_index}: {record.sub_question}"]
+        label = (
+            f"Follow-up question {record.sub_index}"
+            if record.is_follow_up
+            else f"Sub-question {record.sub_index}"
+        )
+        lines = [f"{label}: {record.sub_question}"]
         if record.error:
             lines.append(f"Status: FAILED — {record.error}")
         else:

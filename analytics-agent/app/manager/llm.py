@@ -1,8 +1,9 @@
 """LLM capability for the analytics manager.
 
 The manager makes discrete model calls (D007/D009): decompose a management
-request into concrete sub-questions (M7.1) and, later, synthesize the report
-from accumulated evidence (M7.3). ``ManagerLLMClient`` extends the agent's
+request into concrete sub-questions (M7.1), decide on a bounded follow-up
+round (M7.5) and synthesize the report from accumulated evidence (M7.3).
+``ManagerLLMClient`` extends the agent's
 ``LLMClient`` to share the OpenAI-compatible transport, timeouts, token caps,
 optional bearer auth and the traced-nested-runnable pattern — so manager runs
 compose with the fail-open Langfuse tracing from M5 without any new
@@ -37,6 +38,16 @@ _SYNTHESIZE_SYSTEM = (
     "say so instead of filling the gap."
 )
 
+_INSPECT_SYSTEM = (
+    "You are an analytics manager reviewing the completed sub-analyses of a "
+    "management request. Decide whether ONE follow-up round of at most 2 "
+    "additional analytical questions is needed to drill down into a finding "
+    "or investigate an anomaly. If no follow-up is needed, reply with "
+    "exactly the word NONE. Otherwise return ONLY the follow-up questions, "
+    "one per line, with no numbering, no bullets, no markdown and no "
+    "explanations."
+)
+
 
 class ManagerLLM(Protocol):
     """The model capabilities the manager workflow needs."""
@@ -60,6 +71,18 @@ class ManagerLLM(Protocol):
         """
         ...
 
+    async def inspect(self, request: str, evidence: str) -> str:
+        """Return the raw model decision on follow-up questions (M7.5).
+
+        ``evidence`` is the formatted evidence text (see
+        ``app.manager.synthesize.format_evidence``). A compliant output is
+        exactly ``NONE`` (no follow-up) or up to 2 follow-up questions, one
+        per line; validation happens in
+        ``app.manager.inspect.parse_follow_up_questions``. Raises
+        ``LLMError`` on timeout/transport/HTTP/response failures.
+        """
+        ...
+
 
 class ManagerLLMClient(LLMClient):
     """OpenAI-compatible manager client sharing the agent's LLM plumbing."""
@@ -76,6 +99,15 @@ class ManagerLLMClient(LLMClient):
             "synthesize_report", user, system=_SYNTHESIZE_SYSTEM, max_tokens=self.max_tokens
         )
 
+    async def inspect(self, request: str, evidence: str) -> str:
+        user = f"Management request:\n{request}\n\nEvidence from the sub-analyses:\n{evidence}"
+        # Small, capped output (NONE or a few lines): use the answer token
+        # cap so a reasoning-enabled model cannot spend the whole budget on
+        # chain-of-thought before the decision.
+        return await self._traced_complete(
+            "inspect_follow_ups", user, system=_INSPECT_SYSTEM, max_tokens=self.answer_max_tokens
+        )
+
 
 @dataclass
 class FakeManagerLLM:
@@ -89,9 +121,12 @@ class FakeManagerLLM:
     raw: str = "Which product categories generated the most revenue?"
     # Default report contains no digits, so it is trivially grounded.
     report: str = "Report based on the recorded evidence."
+    # Default: no follow-up requested (empty output is a valid outcome).
+    follow_up_raw: str = ""
     llm_error: LLMError | None = None
     calls: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
     report_calls: list[tuple[str, str]] = field(default_factory=list)
+    inspect_calls: list[tuple[str, str]] = field(default_factory=list)
 
     async def decompose(self, request: str, table_names: list[str]) -> str:
         self.calls.append((request, tuple(table_names)))
@@ -104,6 +139,12 @@ class FakeManagerLLM:
         if self.llm_error is not None:
             raise self.llm_error
         return self.report
+
+    async def inspect(self, request: str, evidence: str) -> str:
+        self.inspect_calls.append((request, evidence))
+        if self.llm_error is not None:
+            raise self.llm_error
+        return self.follow_up_raw
 
 
 def create_manager_llm() -> ManagerLLMClient:
