@@ -1,5 +1,18 @@
 // Vendored from https://github.com/mitsuhiko/agent-stuff (extensions/answer.ts)
-// Upstream: mitsupi v1.6.0, commit 0865c84. Unmodified except this header.
+// Upstream: mitsupi v1.6.0, commit 0865c84.
+//
+// Local patches on top of upstream:
+//  1. Model selection: upstream preferred `openai-codex` gpt-5.x models and
+//     `anthropic` Haiku when they appeared in the model registry, which fails
+//     for setups without credentials for those providers ("No API key for
+//     provider: openai-codex"), because `getApiKeyAndHeaders` reports `ok:
+//     true` even without stored credentials. Extraction now always uses the
+//     current session model; no provider is hardcoded.
+//  2. Message selection: upstream refused to run when the newest assistant
+//     message had a non-"stop" stopReason, so an aborted or errored turn
+//     blocked `/answer`. It now uses the most recent assistant message that
+//     has text, accepting an incomplete one with a notice.
+//
 // Provides /answer and ctrl+. : extract questions from the last assistant message
 // and answer them in an interactive Q&A TUI.
 
@@ -77,38 +90,56 @@ Example output:
   ]
 }`;
 
-const CODEX_MODEL_IDS = ["gpt-5.4-mini", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.3-codex"];
-const HAIKU_MODEL_ID = "claude-haiku-4-5";
-
 /**
- * Prefer a fast configured Codex model for extraction, then haiku, then the
- * current model.
+ * Extract questions with the session's current model.
+ *
+ * Upstream preferred `openai-codex` gpt-5.x models and `anthropic` Haiku
+ * when present in the model registry, which failed for setups without
+ * credentials for those providers ("No API key for provider:
+ * openai-codex"): `getApiKeyAndHeaders` reports `ok: true` even when no
+ * credentials are stored. This deployment only uses the current model, so
+ * extraction always runs on it and no provider is hardcoded.
  */
-async function selectExtractionModel(
-	currentModel: Model<Api>,
+async function extractQuestions(
+	model: Model<Api>,
 	modelRegistry: ModelRegistry,
-): Promise<Model<Api>> {
-	for (const modelId of CODEX_MODEL_IDS) {
-		const codexModel = modelRegistry.find("openai-codex", modelId);
-		if (codexModel) {
-			const auth = await modelRegistry.getApiKeyAndHeaders(codexModel);
-			if (auth.ok) {
-				return codexModel;
-			}
-		}
-	}
-
-	const haikuModel = modelRegistry.find("anthropic", HAIKU_MODEL_ID);
-	if (!haikuModel) {
-		return currentModel;
-	}
-
-	const auth = await modelRegistry.getApiKeyAndHeaders(haikuModel);
+	lastAssistantText: string,
+	signal: AbortSignal,
+): Promise<ExtractionOutcome> {
+	const auth = await modelRegistry.getApiKeyAndHeaders(model);
 	if (auth.ok === false) {
-		return currentModel;
+		return { status: "error", message: auth.error };
 	}
 
-	return haikuModel;
+	const userMessage: UserMessage = {
+		role: "user",
+		content: [{ type: "text", text: lastAssistantText }],
+		timestamp: Date.now(),
+	};
+
+	const response = await complete(
+		model,
+		{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage] },
+		{ apiKey: auth.apiKey, headers: auth.headers, signal },
+	);
+
+	if (response.stopReason === "aborted") {
+		return { status: "cancelled" };
+	}
+	if (response.stopReason === "error") {
+		return { status: "error", message: response.errorMessage ?? "question extraction failed" };
+	}
+
+	const responseText = response.content
+		.filter((c): c is { type: "text"; text: string } => c.type === "text")
+		.map((c) => c.text)
+		.join("\n");
+	const result = parseExtractionResult(responseText);
+	if (!result) {
+		return { status: "error", message: "question extraction returned invalid JSON" };
+	}
+
+	return { status: "ok", result };
 }
 
 function toExtractedQuestion(value: unknown): ExtractedQuestion | null {
@@ -475,28 +506,40 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// Find the last assistant message on the current branch
+			// Find the most recent assistant message with text on the current branch.
+			// Upstream rejected any message whose stopReason was not "stop", so an
+			// aborted or errored turn (which carries no text) blocked /answer even
+			// when earlier messages were usable. Incomplete turns that do carry text
+			// are still usable, so they are accepted with a notice.
 			const branch = ctx.sessionManager.getBranch();
 			let lastAssistantText: string | undefined;
+			let lastAssistantIncomplete: string | undefined;
 
 			for (let i = branch.length - 1; i >= 0; i--) {
 				const entry = branch[i];
 				if (entry.type === "message") {
 					const msg = entry.message;
 					if ("role" in msg && msg.role === "assistant") {
-						if (msg.stopReason !== "stop") {
-							ctx.ui.notify(`Last assistant message incomplete (${msg.stopReason})`, "error");
-							return;
-						}
 						const textParts = msg.content
 							.filter((c): c is { type: "text"; text: string } => c.type === "text")
 							.map((c) => c.text);
-						if (textParts.length > 0) {
-							lastAssistantText = textParts.join("\n");
-							break;
+						if (textParts.length === 0) {
+							continue;
 						}
+						const text = textParts.join("\n");
+						if (msg.stopReason === "stop") {
+							lastAssistantText = text;
+						} else {
+							lastAssistantIncomplete = text;
+						}
+						break;
 					}
 				}
+			}
+
+			if (!lastAssistantText && lastAssistantIncomplete) {
+				lastAssistantText = lastAssistantIncomplete;
+				ctx.ui.notify("Using the most recent incomplete assistant message", "info");
 			}
 
 			if (!lastAssistantText) {
@@ -504,49 +547,16 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// Select the best model for extraction.
-			const extractionModel = await selectExtractionModel(ctx.model, ctx.modelRegistry);
+			// Extraction always runs on the current session model.
+			const extractionModel = ctx.model;
 
 			// Run extraction with loader UI
 			const extractionOutcome = await ctx.ui.custom<ExtractionOutcome>((tui, theme, _kb, done) => {
 				const loader = new BorderedLoader(tui, theme, `Extracting questions using ${extractionModel.id}...`);
 				loader.onAbort = () => done({ status: "cancelled" });
 
-				const doExtract = async (): Promise<ExtractionOutcome> => {
-					const auth = await ctx.modelRegistry.getApiKeyAndHeaders(extractionModel);
-					if (auth.ok === false) {
-						return { status: "error", message: auth.error };
-					}
-					const userMessage: UserMessage = {
-						role: "user",
-						content: [{ type: "text", text: lastAssistantText! }],
-						timestamp: Date.now(),
-					};
-
-					const response = await complete(
-						extractionModel,
-						{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage] },
-						{ apiKey: auth.apiKey, headers: auth.headers, signal: loader.signal },
-					);
-
-					if (response.stopReason === "aborted") {
-						return { status: "cancelled" };
-					}
-					if (response.stopReason === "error") {
-						return { status: "error", message: response.errorMessage ?? "question extraction failed" };
-					}
-
-					const responseText = response.content
-						.filter((c): c is { type: "text"; text: string } => c.type === "text")
-						.map((c) => c.text)
-						.join("\n");
-					const result = parseExtractionResult(responseText);
-					if (!result) {
-						return { status: "error", message: "question extraction returned invalid JSON" };
-					}
-
-					return { status: "ok", result };
-				};
+				const doExtract = async (): Promise<ExtractionOutcome> =>
+					extractQuestions(extractionModel, ctx.modelRegistry, lastAssistantText, loader.signal);
 
 				doExtract()
 					.then(done)
