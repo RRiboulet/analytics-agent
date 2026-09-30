@@ -34,8 +34,9 @@ The project is developed inside a VSCode Dev Container providing Python 3.13, `u
 The repo vendors project-local pi extensions in `.pi/extensions/`. The `subagent` extension lets the main agent delegate isolated tasks to child pi processes that run in detached `tmux` sessions:
 
 - `subagent` starts a child and returns immediately, so the main agent is **not blocked** and can launch more subagents or keep working. Runs execute concurrently (bounded by `PI_SUBAGENT_MAX_CONCURRENT`, default `4`).
-- `subagent_status` inspects runs and their output; `subagent_wait` blocks for selected runs; `subagent_cancel` stops one.
-- Children default to the **OpenRouter** provider (inheriting the parent model), trust the project only when the parent does, and persist state under `~/.pi/agent/tmux-subagents/<session-id>/`.
+- `subagent_status` inspects runs and their output; `subagent_wait` blocks for selected runs; `subagent_cancel` stops one; `subagent_clean` reaps finished tmux sessions/run dirs.
+- Each run reports tokens/turns/cost parsed from the child session. `/subagents` opens a live dashboard with pane/output preview, cancel, and attach commands.
+- Children default to the **OpenRouter** provider (inheriting the parent model), trust the project only when the parent does, and persist state under `~/.pi/agent/tmux-subagents/<session-id>/`. Finished tmux sessions auto-reap (`PI_SUBAGENT_AUTO_REAP`, default `true`); old run dirs are GC'd after `PI_SUBAGENT_GC_DAYS` (default `7`).
 - Attach to a running child interactively with the printed `pi --attach-subagent <id>` command.
 
-Relevant environment variables: `PI_SUBAGENT_MAX_CONCURRENT`, `PI_SUBAGENT_NOTIFY` (default `true`), `PI_SUBAGENT_KILL_ON_SHUTDOWN` (default `false`), `PI_SUBAGENT_PROVIDER`, `PI_SUBAGENT_MODEL`.
+Relevant environment variables: `PI_SUBAGENT_MAX_CONCURRENT`, `PI_SUBAGENT_NOTIFY` (default `true`), `PI_SUBAGENT_KILL_ON_SHUTDOWN` (default `false`), `PI_SUBAGENT_AUTO_REAP` (default `true`), `PI_SUBAGENT_REAP_DELAY_MS`, `PI_SUBAGENT_GC_DAYS` (default `7`), `PI_SUBAGENT_PROVIDER`, `PI_SUBAGENT_MODEL`.

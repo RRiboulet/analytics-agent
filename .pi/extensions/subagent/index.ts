@@ -19,13 +19,21 @@
 //     same provider setup as this repo. Model defaults to the parent model id.
 //  5. Run state is persisted under <agentDir>/tmux-subagents/<session-id>/
 //     runs.json and incomplete runs are resumed after a reload.
+//  6. Lifecycle: finished runs auto-reap their tmux sessions
+//     (PI_SUBAGENT_AUTO_REAP, default true; PI_SUBAGENT_REAP_DELAY_MS), old run
+//     directories are garbage-collected (PI_SUBAGENT_GC_DAYS, default 7), and
+//     `subagent_clean` reaps/deletes finished artifacts on demand.
+//  7. Cost/usage: child session JSONL is parsed to report tokens, turns, and
+//     cost per run in `subagent_status`, notifications, and the dashboard.
+//  8. `/subagents` dashboard: live overlay listing runs with pane/output
+//     preview, cancel, and attach-command copy.
 //
 // `--attach-subagent <id>` and the child reporter (CHILD_ENV) are unchanged.
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { existsSync, type Dirent } from "node:fs";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -38,8 +46,9 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { formatUsage, readSessionUsage, type RunUsage } from "./usage.ts";
 
 const ATTACH_FLAG = "attach-subagent";
 const CHILD_ENV = "PI_TMUX_SUBAGENT_CHILD";
@@ -49,6 +58,7 @@ const POLL_INTERVAL_MS = 500;
 const PANE_PREVIEW_LINES = 18;
 const DEFAULT_PROVIDER = "openrouter";
 const DEFAULT_MAX_CONCURRENT = 4;
+const GC_DAYS = 7;
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const EXTENSION_PATH = fileURLToPath(import.meta.url);
 const RESULT_MESSAGE_TYPE = "subagent-result";
@@ -91,6 +101,7 @@ interface RunRecord {
 	output?: string;
 	error?: string;
 	sessionFile?: string;
+	usage?: RunUsage;
 }
 
 function shellQuote(value: string): string {
@@ -109,6 +120,13 @@ function readBooleanEnv(name: string, fallback: boolean): boolean {
 	const raw = process.env[name]?.trim();
 	if (!raw) return fallback;
 	return !/^(0|false|no|off)$/i.test(raw);
+}
+
+function readNonNegativeIntEnv(name: string, fallback: number): number {
+	const raw = process.env[name]?.trim();
+	if (!raw) return fallback;
+	const parsed = Number.parseInt(raw, 10);
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function tmuxSocketPath(): string {
@@ -378,13 +396,13 @@ function resolveModel(
 
 function runSummary(run: RunRecord, options: { pane?: boolean; output?: boolean } = {}): string {
 	const duration = formatDuration(run.startedAt, run.finishedAt);
+	const usage = formatUsage(run.usage);
 	const lines = [
-		`${run.id}  ${run.status}${duration ? ` · ${duration}` : ""}`,
+		`${run.id}  ${run.status}${duration ? ` · ${duration}` : ""}${usage ? ` · ${usage}` : ""}`,
 		`  task: ${run.task.split("\n", 1)[0]?.slice(0, 100) ?? run.task}`,
 		`  model: ${run.provider}/${run.model} (${run.thinking})`,
-		`  tmux: ${run.tmuxSession}`,
-		`  attach: ${run.attachCommand}`,
 	];
+	lines.push(`  tmux: ${run.tmuxSession}`, `  attach: ${run.attachCommand}`);
 	if (run.sessionFile) lines.push(`  child session: ${run.sessionFile}`);
 	if (options.pane && run.pane) lines.push("", run.pane);
 	if (options.output && run.output) lines.push("", run.output);
@@ -413,9 +431,13 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	const maxConcurrent = readIntEnv("PI_SUBAGENT_MAX_CONCURRENT", DEFAULT_MAX_CONCURRENT);
 	const notifyOnCompletion = readBooleanEnv("PI_SUBAGENT_NOTIFY", true);
 	const killOnShutdown = readBooleanEnv("PI_SUBAGENT_KILL_ON_SHUTDOWN", false);
+	const autoReap = readBooleanEnv("PI_SUBAGENT_AUTO_REAP", true);
+	const reapDelayMs = readNonNegativeIntEnv("PI_SUBAGENT_REAP_DELAY_MS", 0);
+	const gcDays = readNonNegativeIntEnv("PI_SUBAGENT_GC_DAYS", GC_DAYS);
 
 	const runs = new Map<string, RunRecord>();
 	const timers = new Map<string, ReturnType<typeof setTimeout>>();
+	const reapTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	let sessionId = "";
 	let sessionRunsDir = "";
 	let runsIndexPath = "";
@@ -446,13 +468,39 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		timers.delete(runId);
 	};
 
+	const killTmuxSession = async (run: RunRecord): Promise<void> => {
+		await pi.exec("tmux", tmuxArgs("kill-session", "-t", run.tmuxSession)).catch(() => undefined);
+	};
+
+	const reapSession = async (run: RunRecord): Promise<void> => {
+		reapTimers.delete(run.id);
+		if (!autoReap) return;
+		if (run.status === "running" || run.status === "queued") return;
+		await killTmuxSession(run);
+	};
+
+	const scheduleReap = (run: RunRecord): void => {
+		if (!autoReap) return;
+		const existing = reapTimers.get(run.id);
+		if (existing) clearTimeout(existing);
+		if (reapDelayMs <= 0) {
+			void reapSession(run);
+			return;
+		}
+		const timer = setTimeout(() => {
+			void reapSession(run);
+		}, reapDelayMs);
+		reapTimers.set(run.id, timer);
+	};
+
 	const notifyCompletion = async (run: RunRecord): Promise<void> => {
 		if (!notifyOnCompletion) return;
 		const label = run.status === "completed" ? "finished" : run.status;
+		const usage = formatUsage(run.usage);
 		const text = [
 			`Subagent ${run.id} ${label}.`,
 			`Task: ${run.task.split("\n", 1)[0]?.slice(0, 140) ?? run.task}`,
-			`Status: ${run.status}${run.error ? ` — ${run.error}` : ""}`,
+			`Status: ${run.status}${usage ? ` · ${usage}` : ""}${run.error ? ` — ${run.error}` : ""}`,
 			`Inspect the result with subagent_status (id ${run.id}).`,
 		].join("\n");
 		try {
@@ -484,8 +532,10 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			run.error = result.error.trim();
 		}
 		run.output = truncateToolText(output || "(no text output)");
+		run.usage = (await readSessionUsage(run.sessionFile)) ?? run.usage;
 		await persist();
 		await notifyCompletion(run);
+		scheduleReap(run);
 		void drainQueue();
 	};
 
@@ -496,6 +546,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		run.finishedAt = Date.now();
 		await persist();
 		await notifyCompletion(run);
+		scheduleReap(run);
 	};
 
 	const readChildResult = async (run: RunRecord): Promise<ChildResult | undefined> => {
@@ -659,6 +710,28 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		await drainQueue();
 	};
 
+	const gcRunDirectories = async (): Promise<void> => {
+		if (gcDays <= 0) return;
+		const root = path.join(getAgentDir(), RUNS_DIR);
+		let entries: Dirent[];
+		try {
+			entries = await readdir(root, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		const cutoff = Date.now() - gcDays * 24 * 60 * 60 * 1000;
+		for (const entry of entries) {
+			if (!entry.isDirectory() || entry.name === sessionId) continue;
+			const dir = path.join(root, entry.name);
+			try {
+				const info = await stat(dir);
+				if (info.mtimeMs < cutoff) await rm(dir, { recursive: true, force: true });
+			} catch {
+				// Best-effort cleanup.
+			}
+		}
+	};
+
 	const ensureSessionPaths = async (ctx: ExtensionContext): Promise<void> => {
 		if (runsIndexPath) return;
 		sessionId = ctx.sessionManager.getSessionId();
@@ -666,6 +739,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		runsIndexPath = path.join(sessionRunsDir, "runs.json");
 		await mkdir(sessionRunsDir, { recursive: true, mode: 0o700 });
 		await loadPersistedRuns();
+		void gcRunDirectories();
 	};
 
 	pi.on("session_start", async (_event, ctx) => {
@@ -675,12 +749,16 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async () => {
 		for (const timer of timers.values()) clearTimeout(timer);
 		timers.clear();
-		if (!killOnShutdown) return;
+		for (const timer of reapTimers.values()) clearTimeout(timer);
+		reapTimers.clear();
 		for (const run of runs.values()) {
-			if (run.status !== "running" && run.status !== "queued") continue;
-			run.status = "cancelled";
-			run.finishedAt = Date.now();
-			await pi.exec("tmux", tmuxArgs("kill-session", "-t", run.tmuxSession)).catch(() => undefined);
+			if (killOnShutdown && (run.status === "running" || run.status === "queued")) {
+				run.status = "cancelled";
+				run.finishedAt = Date.now();
+				await killTmuxSession(run);
+				continue;
+			}
+			if (autoReap && isTerminal(run.status)) await killTmuxSession(run);
 		}
 		await persist();
 	});
@@ -696,7 +774,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		name: "subagent",
 		label: "Subagent",
 		description:
-			"Start a delegated task in a separate interactive Pi process inside a detached tmux session and return immediately. The main agent is not blocked and may start more subagents or keep working. Runs execute concurrently (bounded by PI_SUBAGENT_MAX_CONCURRENT, default 4); extra runs are queued. Children inherit the current provider/model/thinking unless overridden, defaulting the provider to OpenRouter. Use subagent_status to inspect progress and results, subagent_wait to block for completion, and subagent_cancel to stop a run. Output is capped at 50KB or 2000 lines; the complete child session is preserved on disk.",
+			"Start a delegated task in a separate interactive Pi process inside a detached tmux session and return immediately. The main agent is not blocked and may start more subagents or keep working. Runs execute concurrently (bounded by PI_SUBAGENT_MAX_CONCURRENT, default 4); extra runs are queued. Children inherit the current provider/model/thinking, defaulting the provider to OpenRouter. Use subagent_status to inspect progress and results, subagent_wait to block for completion, and subagent_cancel to stop a run. Output is capped at 50KB or 2000 lines; the complete child session is preserved on disk.",
 		promptSnippet: "Start a delegated, non-blocking, tmux-backed Pi subagent",
 		promptGuidelines: [
 			"Use subagent to delegate an isolated task without blocking: it returns immediately, so start several when useful and keep working.",
@@ -723,6 +801,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 
 			const cwd = path.resolve(ctx.cwd, params.cwd?.trim() || ".");
 			await validateCwd(cwd);
+
 			const selectedModel = resolveModel(ctx, params.provider, params.model);
 			const thinking = params.thinking ?? pi.getThinkingLevel();
 			const id = randomUUID();
@@ -894,6 +973,202 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 
 			const text = targets.map((run) => runSummary(run, { output: true })).join("\n\n");
 			return { content: [{ type: "text", text }], details: { runs: targets } };
+		},
+	});
+
+	pi.registerTool({
+		name: "subagent_clean",
+		label: "Subagent Clean",
+		description:
+			"Reap finished subagent artifacts: kill leftover tmux sessions and optionally delete persisted run directories. Use when completed runs accumulate.",
+		promptSnippet: "Clean up finished subagent tmux sessions and run directories",
+		parameters: Type.Object({
+			all_sessions: Type.Optional(
+				Type.Boolean({ description: "Also scan runs persisted by other sessions on disk. Defaults to false." }),
+			),
+			delete_files: Type.Optional(
+				Type.Boolean({ description: "Delete persisted run directories for cleaned runs. Defaults to false." }),
+			),
+			older_than_hours: Type.Optional(
+				Type.Number({ description: "Only clean runs finished longer ago than this. Defaults to 0 (all finished runs)." }),
+			),
+		}),
+
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			await ensureSessionPaths(ctx);
+			const deleteFiles = params.delete_files ?? false;
+			const cutoff = Date.now() - (params.older_than_hours ?? 0) * 3_600_000;
+
+			const targets: RunRecord[] = [];
+			if (params.all_sessions) {
+				const root = path.join(getAgentDir(), RUNS_DIR);
+				let dirs: Dirent[] = [];
+				try {
+					dirs = await readdir(root, { withFileTypes: true });
+				} catch {
+					dirs = [];
+				}
+				for (const entry of dirs) {
+					if (!entry.isDirectory()) continue;
+					try {
+						const parsed = JSON.parse(await readFile(path.join(root, entry.name, "runs.json"), "utf8")) as RunRecord[];
+						targets.push(...parsed.filter((run) => run?.id));
+					} catch {
+						// No index for this directory.
+					}
+				}
+			} else {
+				targets.push(...runs.values());
+			}
+
+			let killed = 0;
+			let deleted = 0;
+			let skipped = 0;
+			for (const run of targets) {
+				if (!isTerminal(run.status)) {
+					skipped++;
+					continue;
+				}
+				if (run.finishedAt && run.finishedAt > cutoff) {
+					skipped++;
+					continue;
+				}
+				updateTmuxCommands(run);
+				await killTmuxSession(run);
+				killed++;
+				if (deleteFiles && run.runDir) {
+					await rm(run.runDir, { recursive: true, force: true }).catch(() => undefined);
+					deleted++;
+					if (runs.get(run.id) === run) runs.delete(run.id);
+				}
+			}
+			if (deleteFiles) await persist();
+			return {
+				content: [{ type: "text", text: `Cleaned ${killed} tmux session(s), deleted ${deleted} run dir(s), skipped ${skipped}.` }],
+				details: { killed, deleted, skipped },
+			};
+		},
+	});
+
+	pi.registerCommand("subagents", {
+		description: "Live subagent dashboard: view panes/output, cancel runs, copy attach commands",
+		handler: async (_args, ctx) => {
+			if (!ctx.hasUI) {
+				ctx.ui.notify("The /subagents dashboard requires the interactive TUI.", "warning");
+				return;
+			}
+
+			const getRuns = (): RunRecord[] => [...runs.values()].sort((a, b) => a.createdAt - b.createdAt);
+			let selected = 0;
+			let detail = false;
+			let handle: { requestRender: () => void } | undefined;
+
+			const iconFor = (run: RunRecord, theme: { fg: (color: string, text: string) => string }): string => {
+				if (run.status === "completed") return theme.fg("success", "✓");
+				if (run.status === "failed") return theme.fg("error", "✗");
+				if (run.status === "cancelled") return theme.fg("muted", "⊘");
+				if (run.status === "queued") return theme.fg("warning", "◦");
+				return theme.fg("warning", "●");
+			};
+
+			const render = (width: number, theme: any): string[] => {
+				const list = getRuns();
+				if (selected >= list.length) selected = Math.max(0, list.length - 1);
+				const active = list.filter((run) => !isTerminal(run.status)).length;
+				const lines: string[] = [
+					`${theme.bold(theme.fg("accent", "Subagents"))}${theme.fg("dim", `  ${active} active / ${list.length} total`)}`,
+					"",
+				];
+
+				if (list.length === 0) {
+					lines.push(theme.fg("dim", "No subagent runs in this session."));
+				} else {
+					list.forEach((run, index) => {
+						const marker = index === selected ? theme.fg("accent", "▶ ") : "  ";
+						const duration = formatDuration(run.startedAt, run.finishedAt);
+						const meta = [run.status, duration, formatUsage(run.usage)].filter(Boolean).join(" · ");
+						lines.push(`${marker}${iconFor(run, theme)} ${run.id.slice(0, 8)}  ${meta}`);
+						lines.push(`    ${theme.fg("dim", run.task.split("\n", 1)[0] ?? run.task)}`);
+					});
+				}
+
+				const current = list[selected];
+				if (current) {
+					lines.push("");
+					lines.push(
+						theme.fg(
+							"muted",
+							`─ ${current.id} ${current.provider}/${current.model}`,
+						),
+					);
+					const body = detail
+						? (current.output ?? current.pane ?? "(no output yet)")
+						: (current.pane ?? current.output ?? "(no output yet)");
+					for (const line of body.split("\n").slice(-(detail ? 30 : 10))) {
+						lines.push(theme.fg("dim", line));
+					}
+				}
+
+				lines.push("");
+				lines.push(theme.fg("dim", "↑/↓ select · enter detail · c cancel · a attach · esc close"));
+				return lines.map((line) => truncateToWidth(line, width));
+			};
+
+			const interval = setInterval(() => handle?.requestRender(), 500);
+			try {
+				await ctx.ui.custom<null>(
+					(tui, theme, _keybindings, done) => {
+						handle = tui;
+						return {
+							render: (width: number) => render(width, theme),
+							invalidate: () => undefined,
+							handleInput: (data: string) => {
+								const list = getRuns();
+								if (matchesKey(data, Key.escape)) {
+									done(null);
+									return;
+								}
+								if (matchesKey(data, Key.up)) {
+									selected = Math.max(0, selected - 1);
+									tui.requestRender();
+									return;
+								}
+								if (matchesKey(data, Key.down)) {
+									selected = Math.min(Math.max(0, list.length - 1), selected + 1);
+									tui.requestRender();
+									return;
+								}
+								if (matchesKey(data, Key.enter)) {
+									detail = !detail;
+									tui.requestRender();
+									return;
+								}
+								if (data === "c") {
+									const run = list[selected];
+									if (run && !isTerminal(run.status)) {
+										clearTimer(run.id);
+										void killTmuxSession(run);
+										run.status = "cancelled";
+										run.finishedAt = Date.now();
+										void persist().then(() => drainQueue());
+										ctx.ui.notify(`Cancelled ${run.id}`, "info");
+									}
+									tui.requestRender();
+									return;
+								}
+								if (data === "a") {
+									const run = list[selected];
+									if (run) ctx.ui.notify(`Attach: ${run.attachCommand}`, "info");
+									tui.requestRender();
+								}
+							},
+						};
+					},
+					{ overlay: true, overlayOptions: { anchor: "center", width: "80%" } },
+				);
+			} finally {
+				clearInterval(interval);
+			}
 		},
 	});
 }
