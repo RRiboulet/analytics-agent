@@ -11,6 +11,9 @@ grep -qxF '[[ -f ~/.p10k.zsh ]] && source ~/.p10k.zsh' ~/.zshrc || echo '[[ -f ~
 # Install the repo's checked-in p10k config.
 cp /workspace/.devcontainer/shell/p10k.zsh /home/vscode/.p10k.zsh
 
+# Install the repo's tmux config (used by pi's tmux-backed subagents).
+cp /workspace/.devcontainer/shell/tmux.conf /home/vscode/.tmux.conf
+
 # Copy the custom theme for pi
 mkdir -p /home/vscode/.pi/agent/themes
 cp /workspace/.devcontainer/pi/themes/kokomi-theme.json /home/vscode/.pi/agent/themes/kokomi-theme.json

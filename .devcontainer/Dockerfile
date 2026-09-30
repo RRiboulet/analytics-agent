@@ -21,7 +21,8 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
         procps \
         slirp4netns \
         curl \
-        httpie \ 
+        httpie \
+        tmux \
     && rm -rf /var/lib/apt/lists/*
 
 # Powerlevel10k (standalone; no Oh My Zsh required)

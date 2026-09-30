@@ -1,0 +1,899 @@
+// Vendored from https://github.com/mitsuhiko/agent-stuff (extensions/subagent.ts)
+// Upstream: mitsupi v1.6.0, commit 0865c84.
+//
+// Local patches on top of upstream:
+//  1. Non-blocking / concurrent: the `subagent` tool launches a child Pi process
+//     in its own detached tmux session and returns immediately instead of
+//     awaiting completion. Runs are no longer serialized. A bounded number of
+//     children run concurrently (PI_SUBAGENT_MAX_CONCURRENT, default 4); excess
+//     requests are queued and started automatically as slots free up.
+//  2. Background completion watcher: a per-run timer polls the child's atomic
+//     `result.json` and pane output, persists run state, and (optionally) pushes
+//     a follow-up custom message into the main session so the main agent learns
+//     that a subagent finished without ever having been blocked by it.
+//  3. Status tooling: `subagent_status` (list/inspect runs), `subagent_cancel`
+//     (kill a run), and `subagent_wait` (explicitly block until selected runs
+//     finish) let the main agent collect results on demand.
+//  4. OpenRouter default: the child provider defaults to OpenRouter (with parent
+//     inheritance and explicit overrides preserved), so children work in the
+//     same provider setup as this repo. Model defaults to the parent model id.
+//  5. Run state is persisted under <agentDir>/tmux-subagents/<session-id>/
+//     runs.json and incomplete runs are resumed after a reload.
+//
+// `--attach-subagent <id>` and the child reporter (CHILD_ENV) are unchanged.
+
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { StringEnum } from "@earendil-works/pi-ai";
+import {
+	DEFAULT_MAX_BYTES,
+	DEFAULT_MAX_LINES,
+	getAgentDir,
+	truncateHead,
+	type ExtensionAPI,
+	type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
+
+const ATTACH_FLAG = "attach-subagent";
+const CHILD_ENV = "PI_TMUX_SUBAGENT_CHILD";
+const RESULT_ENV = "PI_TMUX_SUBAGENT_RESULT";
+const RUNS_DIR = "tmux-subagents";
+const POLL_INTERVAL_MS = 500;
+const PANE_PREVIEW_LINES = 18;
+const DEFAULT_PROVIDER = "openrouter";
+const DEFAULT_MAX_CONCURRENT = 4;
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+const EXTENSION_PATH = fileURLToPath(import.meta.url);
+const RESULT_MESSAGE_TYPE = "subagent-result";
+
+type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+interface ChildResult {
+	version: 1;
+	status: "completed" | "failed";
+	output: string;
+	error?: string;
+	stopReason?: string;
+	sessionFile?: string;
+	provider?: string;
+	model?: string;
+	thinking?: string;
+	finishedAt: number;
+}
+
+interface RunRecord {
+	id: string;
+	task: string;
+	cwd: string;
+	provider: string;
+	model: string;
+	thinking: string;
+	tmuxSession: string;
+	tmuxTarget: string;
+	attachCommand: string;
+	captureCommand: string;
+	killCommand: string;
+	runDir: string;
+	resultPath: string;
+	trusted: boolean;
+	status: RunStatus;
+	createdAt: number;
+	startedAt?: number;
+	finishedAt?: number;
+	pane?: string;
+	output?: string;
+	error?: string;
+	sessionFile?: string;
+}
+
+function shellQuote(value: string): string {
+	if (value.length === 0) return "''";
+	return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function readIntEnv(name: string, fallback: number): number {
+	const raw = process.env[name]?.trim();
+	if (!raw) return fallback;
+	const parsed = Number.parseInt(raw, 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readBooleanEnv(name: string, fallback: boolean): boolean {
+	const raw = process.env[name]?.trim();
+	if (!raw) return fallback;
+	return !/^(0|false|no|off)$/i.test(raw);
+}
+
+function tmuxSocketPath(): string {
+	return path.join(getAgentDir(), "tmux-subagents.sock");
+}
+
+function tmuxSessionName(sessionId: string): string {
+	return `pi-agent-${sessionId}`;
+}
+
+function currentTmuxSocket(): string | undefined {
+	const socket = process.env.TMUX?.split(",", 1)[0]?.trim();
+	return socket || undefined;
+}
+
+function attachFlagValue(argv: string[]): string | undefined {
+	const flag = `--${ATTACH_FLAG}`;
+	for (let index = 2; index < argv.length; index++) {
+		const argument = argv[index];
+		if (argument === "--") break;
+		if (argument === flag) {
+			const value = argv[index + 1];
+			return !value || value.startsWith("--") ? "" : value;
+		}
+		if (argument.startsWith(`${flag}=`)) return argument.slice(flag.length + 1);
+	}
+	return undefined;
+}
+
+function tmuxCommandPrefix(): string {
+	return `tmux -S ${shellQuote(tmuxSocketPath())}`;
+}
+
+function tmuxArgs(...args: string[]): string[] {
+	return ["-S", tmuxSocketPath(), ...args];
+}
+
+function updateTmuxCommands(run: RunRecord): void {
+	const tmux = tmuxCommandPrefix();
+	run.attachCommand = `pi --${ATTACH_FLAG} ${shellQuote(run.id)}`;
+	run.captureCommand = `${tmux} capture-pane -p -J -t ${shellQuote(run.tmuxTarget)}`;
+	run.killCommand = `${tmux} kill-session -t ${shellQuote(run.tmuxSession)}`;
+}
+
+function attachToSubagentAndExit(rawTarget: string): never {
+	const target = rawTarget.trim();
+	if (!target) {
+		console.error(`Error: --${ATTACH_FLAG} requires the session id printed by the subagent tool.`);
+		process.exit(2);
+	}
+
+	let socket = tmuxSocketPath();
+	let session: string;
+	if (target.startsWith("v1.")) {
+		// Keep attachment working for sessions started before session-id targets.
+		try {
+			const legacy = JSON.parse(Buffer.from(target.slice(3), "base64url").toString("utf8")) as {
+				s?: unknown;
+				p?: unknown;
+			};
+			if (typeof legacy.s !== "string" || !legacy.s || typeof legacy.p !== "string" || !legacy.p) {
+				throw new Error("missing tmux session or socket");
+			}
+			session = legacy.s;
+			socket = legacy.p;
+		} catch (error) {
+			console.error(`Error: invalid legacy subagent target: ${error instanceof Error ? error.message : String(error)}`);
+			process.exit(2);
+		}
+	} else {
+		if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(target)) {
+			console.error(`Error: invalid subagent session id: ${target}`);
+			process.exit(2);
+		}
+		session = tmuxSessionName(target);
+	}
+
+	const sameServer = currentTmuxSocket() === socket;
+	const args = ["-S", socket, sameServer ? "switch-client" : "attach-session", "-t", session];
+	const env = { ...process.env };
+	if (!sameServer) {
+		delete env.TMUX;
+		delete env.TMUX_PANE;
+	}
+	const result = spawnSync("tmux", args, { stdio: "inherit", env });
+	if (result.error) console.error(`Failed to run tmux: ${result.error.message}`);
+	process.exit(result.status ?? 1);
+}
+
+function getPiInvocationParts(): string[] {
+	const currentScript = process.argv[1];
+	if (currentScript && existsSync(currentScript)) {
+		return [process.execPath, currentScript];
+	}
+
+	const execName = path.basename(process.execPath).toLowerCase();
+	if (!/^(node|bun)(\.exe)?$/.test(execName)) {
+		return [process.execPath];
+	}
+
+	return ["pi"];
+}
+
+function textFromAssistant(message: Record<string, unknown>): string {
+	const content = message.content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((part): part is { type: "text"; text: string } => {
+			return Boolean(part && typeof part === "object" && part.type === "text" && typeof part.text === "string");
+		})
+		.map((part) => part.text)
+		.join("\n");
+}
+
+function findLastAssistant(ctx: ExtensionContext): Record<string, unknown> | undefined {
+	const branch = ctx.sessionManager.getBranch();
+	for (let index = branch.length - 1; index >= 0; index--) {
+		const entry = branch[index];
+		if (entry.type !== "message") continue;
+		const message = entry.message as unknown as Record<string, unknown>;
+		if (message.role === "assistant") return message;
+	}
+	return undefined;
+}
+
+async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+	const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+	await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+	await rename(temporaryPath, filePath);
+}
+
+function registerChildReporter(pi: ExtensionAPI, resultPath: string): void {
+	let reported = false;
+
+	const report = async (ctx: ExtensionContext, fallbackError?: string): Promise<void> => {
+		if (reported) return;
+		reported = true;
+
+		const assistant = findLastAssistant(ctx);
+		const stopReason = typeof assistant?.stopReason === "string" ? assistant.stopReason : undefined;
+		const assistantError = typeof assistant?.errorMessage === "string" ? assistant.errorMessage : undefined;
+		const failed = !assistant || stopReason === "error" || stopReason === "aborted" || Boolean(fallbackError);
+		const output = assistant ? textFromAssistant(assistant) : "";
+		const result: ChildResult = {
+			version: 1,
+			status: failed ? "failed" : "completed",
+			output,
+			error: fallbackError ?? assistantError ?? (!assistant ? "Subagent exited without an assistant response." : undefined),
+			stopReason,
+			sessionFile: ctx.sessionManager.getSessionFile(),
+			provider: typeof assistant?.provider === "string" ? assistant.provider : ctx.model?.provider,
+			model: typeof assistant?.model === "string" ? assistant.model : ctx.model?.id,
+			thinking: pi.getThinkingLevel(),
+			finishedAt: Date.now(),
+		};
+
+		try {
+			await writeJsonAtomic(resultPath, result);
+		} catch (error) {
+			console.error(`[tmux-subagent] Failed to write result: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	};
+
+	// agent_settled was added after older peer type declarations but is present
+	// in the Pi runtime this extension targets.
+	(
+		pi.on as unknown as (
+			event: "agent_settled",
+			handler: (event: unknown, ctx: ExtensionContext) => void | Promise<void>,
+		) => void
+	)("agent_settled", async (_event, ctx) => {
+		await report(ctx);
+		ctx.shutdown();
+	});
+
+	pi.on("session_shutdown", async (_event, ctx) => {
+		if (!reported) await report(ctx, "Subagent session shut down before the task settled.");
+	});
+}
+
+function trimPane(output: string): string {
+	const lines = output.replace(/\r/g, "").split("\n");
+	while (lines.length > 0 && !lines[0]?.trim()) lines.shift();
+	while (lines.length > 0 && !lines[lines.length - 1]?.trim()) lines.pop();
+	return lines.slice(-PANE_PREVIEW_LINES).join("\n");
+}
+
+function formatDuration(startedAt: number | undefined, finishedAt = Date.now()): string | undefined {
+	if (startedAt === undefined) return undefined;
+	const seconds = Math.max(0, Math.round((finishedAt - startedAt) / 1000));
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	return `${minutes}m ${seconds % 60}s`;
+}
+
+function truncateToolText(text: string): string {
+	const truncated = truncateHead(text, { maxBytes: DEFAULT_MAX_BYTES, maxLines: DEFAULT_MAX_LINES });
+	if (!truncated.truncated) return truncated.content;
+	return `${truncated.content}\n\n[Output truncated. Full output is available in the child session file.]`;
+}
+
+function isTerminal(status: RunStatus): boolean {
+	return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+async function abortableDelay(ms: number, signal: AbortSignal | undefined): Promise<void> {
+	if (signal?.aborted) throw new Error("Subagent wait aborted.");
+	await new Promise<void>((resolve, reject) => {
+		const cleanup = () => signal?.removeEventListener("abort", onAbort);
+		const timer = setTimeout(() => {
+			cleanup();
+			resolve();
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			cleanup();
+			reject(new Error("Subagent wait aborted."));
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+async function validateCwd(cwd: string): Promise<void> {
+	let info;
+	try {
+		info = await stat(cwd);
+	} catch {
+		throw new Error(`Subagent working directory does not exist: ${cwd}`);
+	}
+	if (!info.isDirectory()) throw new Error(`Subagent working directory is not a directory: ${cwd}`);
+}
+
+function isSameOrDescendant(base: string, candidate: string): boolean {
+	const relative = path.relative(base, candidate);
+	return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function resolveModel(
+	ctx: ExtensionContext,
+	providerOverride: string | undefined,
+	modelOverride: string | undefined,
+): { provider: string; model: string } {
+	const envProvider = process.env.PI_SUBAGENT_PROVIDER?.trim();
+	const envModel = process.env.PI_SUBAGENT_MODEL?.trim();
+	const explicitProvider = providerOverride?.trim() || envProvider;
+	const explicitModel = modelOverride?.trim() || envModel;
+
+	let provider = explicitProvider || ctx.model?.provider || DEFAULT_PROVIDER;
+	let model = explicitModel || ctx.model?.id || process.env.PI_MODEL?.trim() || "";
+
+	// Accept the canonical `openrouter/<id>` form for explicit overrides, but
+	// never split inherited model ids whose slash belongs to the id itself
+	// (OpenRouter's `deepseek/...`, `openai/...` style ids).
+	const openRouterPrefix = `${DEFAULT_PROVIDER}/`;
+	if (explicitModel && !explicitProvider && explicitModel.startsWith(openRouterPrefix)) {
+		provider = DEFAULT_PROVIDER;
+		model = explicitModel.slice(openRouterPrefix.length);
+	} else if (explicitModel && explicitProvider === DEFAULT_PROVIDER && model.startsWith(openRouterPrefix)) {
+		model = model.slice(openRouterPrefix.length);
+	}
+
+	if (!provider) provider = DEFAULT_PROVIDER;
+	if (!model) throw new Error("No model is active. Pass both provider and model to the subagent tool.");
+	return { provider, model };
+}
+
+function runSummary(run: RunRecord, options: { pane?: boolean; output?: boolean } = {}): string {
+	const duration = formatDuration(run.startedAt, run.finishedAt);
+	const lines = [
+		`${run.id}  ${run.status}${duration ? ` · ${duration}` : ""}`,
+		`  task: ${run.task.split("\n", 1)[0]?.slice(0, 100) ?? run.task}`,
+		`  model: ${run.provider}/${run.model} (${run.thinking})`,
+		`  tmux: ${run.tmuxSession}`,
+		`  attach: ${run.attachCommand}`,
+	];
+	if (run.sessionFile) lines.push(`  child session: ${run.sessionFile}`);
+	if (options.pane && run.pane) lines.push("", run.pane);
+	if (options.output && run.output) lines.push("", run.output);
+	if (run.error && !(options.output && run.output?.includes(run.error))) lines.push("", `Error: ${run.error}`);
+	return lines.join("\n");
+}
+
+export default function subagentExtension(pi: ExtensionAPI): void {
+	pi.registerFlag(ATTACH_FLAG, {
+		description: "Attach using the child session id printed by the subagent tool",
+		type: "string",
+	});
+	const attachTarget = attachFlagValue(process.argv);
+	if (attachTarget !== undefined) attachToSubagentAndExit(attachTarget);
+
+	if (process.env[CHILD_ENV] === "1") {
+		const resultPath = process.env[RESULT_ENV];
+		if (!resultPath) {
+			console.error(`[tmux-subagent] ${RESULT_ENV} is required in child mode.`);
+			return;
+		}
+		registerChildReporter(pi, resultPath);
+		return;
+	}
+
+	const maxConcurrent = readIntEnv("PI_SUBAGENT_MAX_CONCURRENT", DEFAULT_MAX_CONCURRENT);
+	const notifyOnCompletion = readBooleanEnv("PI_SUBAGENT_NOTIFY", true);
+	const killOnShutdown = readBooleanEnv("PI_SUBAGENT_KILL_ON_SHUTDOWN", false);
+
+	const runs = new Map<string, RunRecord>();
+	const timers = new Map<string, ReturnType<typeof setTimeout>>();
+	let sessionId = "";
+	let sessionRunsDir = "";
+	let runsIndexPath = "";
+	let persistChain: Promise<void> = Promise.resolve();
+
+	const persist = (): Promise<void> => {
+		if (!runsIndexPath) return Promise.resolve();
+		const snapshot = `${JSON.stringify([...runs.values()], null, 2)}\n`;
+		persistChain = persistChain
+			.then(() => writeFile(runsIndexPath, snapshot, { encoding: "utf8", mode: 0o600 }))
+			.catch((error) => {
+				console.error(`[tmux-subagent] Failed to persist runs: ${error instanceof Error ? error.message : String(error)}`);
+			});
+		return persistChain;
+	};
+
+	const activeCount = (): number => {
+		let count = 0;
+		for (const run of runs.values()) {
+			if (run.status === "running") count++;
+		}
+		return count;
+	};
+
+	const clearTimer = (runId: string): void => {
+		const timer = timers.get(runId);
+		if (timer) clearTimeout(timer);
+		timers.delete(runId);
+	};
+
+	const notifyCompletion = async (run: RunRecord): Promise<void> => {
+		if (!notifyOnCompletion) return;
+		const label = run.status === "completed" ? "finished" : run.status;
+		const text = [
+			`Subagent ${run.id} ${label}.`,
+			`Task: ${run.task.split("\n", 1)[0]?.slice(0, 140) ?? run.task}`,
+			`Status: ${run.status}${run.error ? ` — ${run.error}` : ""}`,
+			`Inspect the result with subagent_status (id ${run.id}).`,
+		].join("\n");
+		try {
+			await pi.sendMessage(
+				{
+					customType: RESULT_MESSAGE_TYPE,
+					content: text,
+					display: true,
+					details: { id: run.id, status: run.status, error: run.error },
+				},
+				{ deliverAs: "followUp", triggerTurn: true },
+			);
+		} catch (error) {
+			// The session may be shutting down; state is still on disk.
+			console.error(`[tmux-subagent] Failed to notify about ${run.id}: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	};
+
+	const finalizeRun = async (run: RunRecord, result: ChildResult): Promise<void> => {
+		run.status = result.status === "completed" ? "completed" : "failed";
+		run.finishedAt = result.finishedAt || Date.now();
+		run.sessionFile = result.sessionFile;
+		run.provider = result.provider ?? run.provider;
+		run.model = result.model ?? run.model;
+		run.thinking = result.thinking ?? run.thinking;
+		let output = result.output.trim();
+		if (result.status === "failed" && result.error?.trim()) {
+			output += `${output ? "\n\n" : ""}Error: ${result.error.trim()}`;
+			run.error = result.error.trim();
+		}
+		run.output = truncateToolText(output || "(no text output)");
+		await persist();
+		await notifyCompletion(run);
+		void drainQueue();
+	};
+
+	const markRunFailed = async (run: RunRecord, message: string): Promise<void> => {
+		clearTimer(run.id);
+		run.status = "failed";
+		run.error = message;
+		run.finishedAt = Date.now();
+		await persist();
+		await notifyCompletion(run);
+	};
+
+	const readChildResult = async (run: RunRecord): Promise<ChildResult | undefined> => {
+		try {
+			return JSON.parse(await readFile(run.resultPath, "utf8")) as ChildResult;
+		} catch {
+			return undefined;
+		}
+	};
+
+	const watchTick = async (run: RunRecord): Promise<void> => {
+		timers.delete(run.id);
+		if (isTerminal(run.status)) return;
+
+		try {
+			const result = await readChildResult(run);
+			if (result) {
+				await finalizeRun(run, result);
+				return;
+			}
+
+			const paneResult = await pi.exec("tmux", tmuxArgs("capture-pane", "-p", "-J", "-t", run.tmuxTarget), {
+				timeout: 5_000,
+			});
+			if (paneResult.code === 0) {
+				const pane = trimPane(paneResult.stdout);
+				if (pane && pane !== run.pane) {
+					run.pane = pane;
+					await persist();
+				}
+			}
+
+			const dead = await pi.exec("tmux", tmuxArgs("display-message", "-p", "-t", run.tmuxTarget, "#{pane_dead}"));
+			if (dead.code === 0 && dead.stdout.trim() === "1") {
+				await abortableDelay(100, undefined);
+				const late = await readChildResult(run);
+				if (late) {
+					await finalizeRun(run, late);
+					return;
+				}
+				const reason = run.pane
+					? `Child Pi exited before reporting a result.\n\n${run.pane}\n\nInspect: ${run.captureCommand}`
+					: `Child Pi exited before reporting a result. Inspect: ${run.captureCommand}`;
+				await markRunFailed(run, reason);
+				void drainQueue();
+				return;
+			}
+		} catch (error) {
+			// Transient tmux/exec errors are retried; only unexpected ones surface.
+			if (isTerminal(run.status)) return;
+			console.error(`[tmux-subagent] watch error for ${run.id}: ${error instanceof Error ? error.message : String(error)}`);
+		}
+
+		const timer = setTimeout(() => {
+			void watchTick(run);
+		}, POLL_INTERVAL_MS);
+		timers.set(run.id, timer);
+	};
+
+	const scheduleWatch = (run: RunRecord): void => {
+		if (timers.has(run.id)) return;
+		const timer = setTimeout(() => {
+			void watchTick(run);
+		}, POLL_INTERVAL_MS);
+		timers.set(run.id, timer);
+	};
+
+	const launchRun = async (run: RunRecord): Promise<void> => {
+		try {
+			const tmuxVersion = await pi.exec("tmux", ["-V"], { timeout: 5_000 });
+			if (tmuxVersion.code !== 0) {
+				throw new Error(`tmux is required for subagents: ${tmuxVersion.stderr.trim() || "tmux not found"}`);
+			}
+
+			const created = await pi.exec("tmux", tmuxArgs("new-session", "-d", "-s", run.tmuxSession, "-n", "pi", "-c", run.cwd));
+			if (created.code !== 0) {
+				throw new Error(`Failed to create tmux session: ${created.stderr.trim() || created.stdout.trim()}`);
+			}
+
+			const remain = await pi.exec(
+				"tmux",
+				tmuxArgs("set-window-option", "-t", `${run.tmuxSession}:0`, "remain-on-exit", "on"),
+			);
+			if (remain.code !== 0) throw new Error(remain.stderr.trim() || "Failed to set remain-on-exit.");
+
+			const promptPath = path.join(run.runDir, "task.md");
+			const sessionDir = path.join(run.runDir, "session");
+			const piArgs = [
+				...getPiInvocationParts(),
+				"--provider",
+				run.provider,
+				"--model",
+				run.model,
+				"--thinking",
+				run.thinking,
+				"--session-dir",
+				sessionDir,
+				"--session-id",
+				run.id,
+				"--name",
+				run.tmuxSession,
+				run.trusted ? "--approve" : "--no-approve",
+				"--extension",
+				EXTENSION_PATH,
+				`@${promptPath}`,
+			];
+			const childCommand = [
+				"exec env",
+				`${CHILD_ENV}=1`,
+				`${RESULT_ENV}=${shellQuote(run.resultPath)}`,
+				piArgs.map(shellQuote).join(" "),
+			].join(" ");
+
+			const sent = await pi.exec("tmux", tmuxArgs("send-keys", "-t", run.tmuxTarget, "-l", "--", childCommand));
+			if (sent.code !== 0) throw new Error(sent.stderr.trim() || "Failed to start child Pi.");
+			const entered = await pi.exec("tmux", tmuxArgs("send-keys", "-t", run.tmuxTarget, "Enter"));
+			if (entered.code !== 0) throw new Error(entered.stderr.trim() || "Failed to submit child command.");
+
+			run.status = "running";
+			run.startedAt = Date.now();
+			await persist();
+			scheduleWatch(run);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			await pi.exec("tmux", tmuxArgs("kill-session", "-t", run.tmuxSession)).catch(() => undefined);
+			await markRunFailed(run, message);
+		}
+	};
+
+	const drainQueue = async (): Promise<void> => {
+		while (activeCount() < maxConcurrent) {
+			const next = [...runs.values()].find((run) => run.status === "queued");
+			if (!next) return;
+			next.status = "running";
+			next.startedAt = Date.now();
+			await persist();
+			await launchRun(next);
+		}
+	};
+
+	const startRun = async (run: RunRecord): Promise<void> => {
+		runs.set(run.id, run);
+		await persist();
+		await drainQueue();
+	};
+
+	const loadPersistedRuns = async (): Promise<void> => {
+		if (!runsIndexPath) return;
+		let parsed: RunRecord[];
+		try {
+			parsed = JSON.parse(await readFile(runsIndexPath, "utf8")) as RunRecord[];
+		} catch {
+			return;
+		}
+		for (const run of parsed) {
+			if (!run?.id) continue;
+			updateTmuxCommands(run);
+			runs.set(run.id, run);
+			if (run.status === "running") scheduleWatch(run);
+		}
+		await drainQueue();
+	};
+
+	const ensureSessionPaths = async (ctx: ExtensionContext): Promise<void> => {
+		if (runsIndexPath) return;
+		sessionId = ctx.sessionManager.getSessionId();
+		sessionRunsDir = path.join(getAgentDir(), RUNS_DIR, sessionId);
+		runsIndexPath = path.join(sessionRunsDir, "runs.json");
+		await mkdir(sessionRunsDir, { recursive: true, mode: 0o700 });
+		await loadPersistedRuns();
+	};
+
+	pi.on("session_start", async (_event, ctx) => {
+		await ensureSessionPaths(ctx);
+	});
+
+	pi.on("session_shutdown", async () => {
+		for (const timer of timers.values()) clearTimeout(timer);
+		timers.clear();
+		if (!killOnShutdown) return;
+		for (const run of runs.values()) {
+			if (run.status !== "running" && run.status !== "queued") continue;
+			run.status = "cancelled";
+			run.finishedAt = Date.now();
+			await pi.exec("tmux", tmuxArgs("kill-session", "-t", run.tmuxSession)).catch(() => undefined);
+		}
+		await persist();
+	});
+
+	pi.registerMessageRenderer(RESULT_MESSAGE_TYPE, (message, _options, theme) => {
+		const details = message.details as { status?: string } | undefined;
+		const icon =
+			details?.status === "completed" ? theme.fg("success", "✓") : details?.status === "failed" ? theme.fg("error", "✗") : theme.fg("warning", "●");
+		return new Text(`${icon} ${String(message.content)}`, 0, 0);
+	});
+
+	pi.registerTool({
+		name: "subagent",
+		label: "Subagent",
+		description:
+			"Start a delegated task in a separate interactive Pi process inside a detached tmux session and return immediately. The main agent is not blocked and may start more subagents or keep working. Runs execute concurrently (bounded by PI_SUBAGENT_MAX_CONCURRENT, default 4); extra runs are queued. Children inherit the current provider/model/thinking unless overridden, defaulting the provider to OpenRouter. Use subagent_status to inspect progress and results, subagent_wait to block for completion, and subagent_cancel to stop a run. Output is capped at 50KB or 2000 lines; the complete child session is preserved on disk.",
+		promptSnippet: "Start a delegated, non-blocking, tmux-backed Pi subagent",
+		promptGuidelines: [
+			"Use subagent to delegate an isolated task without blocking: it returns immediately, so start several when useful and keep working.",
+			"Call subagent_status with the printed id to read a subagent's output; call subagent_wait only when you deliberately need to block until runs finish.",
+		],
+		parameters: Type.Object({
+			task: Type.String({ description: "The complete task for the child Pi process" }),
+			cwd: Type.Optional(Type.String({ description: "Working directory. Defaults to the current project." })),
+			provider: Type.Optional(Type.String({ description: "Provider override. Defaults to the current provider, then OpenRouter." })),
+			model: Type.Optional(
+				Type.String({ description: "Model id override. Defaults to the current model." }),
+			),
+			thinking: Type.Optional(
+				StringEnum(THINKING_LEVELS, {
+					description: "Thinking level override. Defaults to the current thinking level.",
+				}),
+			),
+		}),
+
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			if (!params.task.trim()) throw new Error("Subagent task must not be empty.");
+			if (signal?.aborted) throw new Error("Subagent aborted.");
+			await ensureSessionPaths(ctx);
+
+			const cwd = path.resolve(ctx.cwd, params.cwd?.trim() || ".");
+			await validateCwd(cwd);
+			const selectedModel = resolveModel(ctx, params.provider, params.model);
+			const thinking = params.thinking ?? pi.getThinkingLevel();
+			const id = randomUUID();
+			const runDir = path.join(sessionRunsDir, id);
+			const resultPath = path.join(runDir, "result.json");
+			const tmuxSession = tmuxSessionName(id);
+			const run: RunRecord = {
+				id,
+				task: params.task,
+				cwd,
+				provider: selectedModel.provider,
+				model: selectedModel.model,
+				thinking,
+				tmuxSession,
+				tmuxTarget: `${tmuxSession}:0.0`,
+				attachCommand: "",
+				captureCommand: "",
+				killCommand: "",
+				runDir,
+				resultPath,
+				trusted: false,
+				status: "queued",
+				createdAt: Date.now(),
+			};
+			run.trusted = isSameOrDescendant(path.resolve(ctx.cwd), cwd) && ctx.isProjectTrusted();
+			updateTmuxCommands(run);
+
+			await mkdir(runDir, { recursive: true, mode: 0o700 });
+			await mkdir(path.join(runDir, "session"), { recursive: true, mode: 0o700 });
+			await writeFile(path.join(runDir, "task.md"), `# Delegated task\n\n${params.task}\n`, {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+
+			await startRun(run);
+
+			const queued = run.status === "queued";
+			const text = [
+				queued ? `Subagent ${id} queued (${activeCount()}/${maxConcurrent} running).` : `Subagent ${id} started.`,
+				`Model: ${run.provider}/${run.model} (${run.thinking})`,
+				`tmux: ${run.tmuxSession}`,
+				`Attach: ${run.attachCommand}`,
+				`Capture: ${run.captureCommand}`,
+				`Status: call subagent_status with id ${id}`,
+			].join("\n");
+			return { content: [{ type: "text", text }], details: run };
+		},
+
+		renderCall(args, theme) {
+			const task = args.task?.trim() || "...";
+			const firstLine = task.split("\n", 1)[0] ?? task;
+			const preview = firstLine.length > 100 ? `${firstLine.slice(0, 100)}…` : firstLine;
+			let text = theme.fg("toolTitle", theme.bold("subagent ")) + theme.fg("dim", preview);
+			const overrides = [args.provider, args.model, args.thinking].filter(Boolean);
+			if (overrides.length > 0) text += `\n  ${theme.fg("muted", overrides.join(" · "))}`;
+			return new Text(text, 0, 0);
+		},
+
+		renderResult(result, _options, theme) {
+			const run = result.details as RunRecord | undefined;
+			if (!run) {
+				const content = result.content.find((part) => part.type === "text");
+				return new Text(content?.type === "text" ? content.text : "(no output)", 0, 0);
+			}
+			let text = `${theme.fg("warning", "●")} ${theme.fg("toolTitle", theme.bold(run.tmuxSession))}`;
+			text += theme.fg("muted", ` · ${run.status}`);
+			text += `\n  ${theme.fg("accent", run.attachCommand)}`;
+			text += `\n  ${theme.fg("dim", `${run.provider}/${run.model} (${run.thinking})`)}`;
+			return new Text(text, 0, 0);
+		},
+	});
+
+	pi.registerTool({
+		name: "subagent_status",
+		label: "Subagent Status",
+		description:
+			"List subagent runs started in this session or inspect one by id. Returns status, model, tmux attach command, latest pane output while running, and the final output once finished. Non-blocking.",
+		promptSnippet: "Inspect non-blocking subagent runs and their output",
+		parameters: Type.Object({
+			id: Type.Optional(Type.String({ description: "Run id to inspect. Omit to list all runs in this session." })),
+			include_output: Type.Optional(Type.Boolean({ description: "Include full stored output for finished runs. Defaults to false." })),
+		}),
+
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			await ensureSessionPaths(ctx);
+			const includeOutput = params.include_output ?? false;
+			const runsArray = [...runs.values()].sort((a, b) => a.createdAt - b.createdAt);
+			if (params.id) {
+				const run = runs.get(params.id.trim());
+				if (!run) throw new Error(`Unknown subagent run: ${params.id}`);
+				return {
+					content: [{ type: "text", text: runSummary(run, { pane: true, output: true }) }],
+					details: { runs: [run] },
+				};
+			}
+			if (runsArray.length === 0) {
+				return { content: [{ type: "text", text: "No subagent runs in this session." }], details: { runs: [] } };
+			}
+			const text = runsArray
+				.map((run) =>
+					runSummary(run, { pane: run.status === "running", output: includeOutput || !isTerminal(run.status) }),
+				)
+				.join("\n\n");
+			return { content: [{ type: "text", text }], details: { runs: runsArray } };
+		},
+	});
+
+	pi.registerTool({
+		name: "subagent_cancel",
+		label: "Subagent Cancel",
+		description: "Cancel a subagent run by id: kill its tmux session and mark it cancelled.",
+		promptSnippet: "Cancel a running non-blocking subagent",
+		parameters: Type.Object({
+			id: Type.String({ description: "Run id to cancel." }),
+		}),
+
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			await ensureSessionPaths(ctx);
+			const id = params.id.trim();
+			const run = runs.get(id);
+			if (!run) throw new Error(`Unknown subagent run: ${id}`);
+			if (isTerminal(run.status)) {
+				return { content: [{ type: "text", text: `Subagent ${id} is already ${run.status}.` }], details: run };
+			}
+			clearTimer(run.id);
+			await pi.exec("tmux", tmuxArgs("kill-session", "-t", run.tmuxSession)).catch(() => undefined);
+			run.status = "cancelled";
+			run.finishedAt = Date.now();
+			await persist();
+			void drainQueue();
+			return { content: [{ type: "text", text: `Subagent ${id} cancelled.` }], details: run };
+		},
+	});
+
+	pi.registerTool({
+		name: "subagent_wait",
+		label: "Subagent Wait",
+		description:
+			"Block until the given subagent runs finish (or all incomplete runs when no ids are given), then return their outputs. Use only when you deliberately need to wait; otherwise use subagent_status.",
+		promptSnippet: "Block until selected non-blocking subagents finish",
+		parameters: Type.Object({
+			ids: Type.Optional(Type.Array(Type.String(), { description: "Run ids to wait for. Defaults to all incomplete runs." })),
+			timeout_seconds: Type.Optional(Type.Number({ description: "Maximum seconds to wait. Defaults to 1800." })),
+		}),
+
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			await ensureSessionPaths(ctx);
+			const timeoutMs = (params.timeout_seconds ?? 1800) * 1000;
+			const targets = params.ids?.length
+				? params.ids.map((id) => {
+						const run = runs.get(id.trim());
+						if (!run) throw new Error(`Unknown subagent run: ${id}`);
+						return run;
+					})
+				: [...runs.values()].filter((run) => !isTerminal(run.status));
+			if (targets.length === 0) {
+				return { content: [{ type: "text", text: "No incomplete subagent runs to wait for." }], details: { runs: [] } };
+			}
+
+			const deadline = Date.now() + timeoutMs;
+			while (targets.some((run) => !isTerminal(run.status))) {
+				if (signal?.aborted) throw new Error("Subagent wait aborted.");
+				if (Date.now() >= deadline) {
+					const pending = targets.filter((run) => !isTerminal(run.status)).map((run) => run.id);
+					throw new Error(`Timed out waiting for: ${pending.join(", ")}`);
+				}
+				await abortableDelay(POLL_INTERVAL_MS, signal);
+			}
+
+			const text = targets.map((run) => runSummary(run, { output: true })).join("\n\n");
+			return { content: [{ type: "text", text }], details: { runs: targets } };
+		},
+	});
+}
