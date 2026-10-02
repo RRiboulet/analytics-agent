@@ -28,7 +28,7 @@
  * 4. Submits the compiled answers when done
  */
 
-import { complete, parseJsonWithRepair, type Model, type Api, type UserMessage } from "@earendil-works/pi-ai";
+import { parseJsonWithRepair, type Model, type Api, type UserMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 import {
@@ -100,7 +100,7 @@ Example output:
  * credentials are stored. This deployment only uses the current model, so
  * extraction always runs on it and no provider is hardcoded.
  */
-async function extractQuestions(
+export async function extractQuestions(
 	model: Model<Api>,
 	modelRegistry: ModelRegistry,
 	lastAssistantText: string,
@@ -117,11 +117,16 @@ async function extractQuestions(
 		timestamp: Date.now(),
 	};
 
-	const response = await complete(
-		model,
-		{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage] },
-		{ apiKey: auth.apiKey, headers: auth.headers, signal },
-	);
+	// pi 1.0 removed the top-level `complete()` helper; `streamSimple()` is the
+	// documented entry point for nested calls (`docs/extensions.md`). Its
+	// stream resolves to the final AssistantMessage via `result()`.
+	const response = await modelRegistry
+		.streamSimple(
+			model,
+			{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage] },
+			{ apiKey: auth.apiKey, headers: auth.headers, signal },
+		)
+		.result();
 
 	if (response.stopReason === "aborted") {
 		return { status: "cancelled" };
