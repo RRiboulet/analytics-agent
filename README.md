@@ -40,3 +40,12 @@ The repo vendors project-local pi extensions in `.pi/extensions/`. The `subagent
 - Attach to a running child interactively with the printed `pi --attach-subagent <id>` command.
 
 Relevant environment variables: `PI_SUBAGENT_MAX_CONCURRENT`, `PI_SUBAGENT_NOTIFY` (default `true`), `PI_SUBAGENT_KILL_ON_SHUTDOWN` (default `false`), `PI_SUBAGENT_AUTO_REAP` (default `true`), `PI_SUBAGENT_REAP_DELAY_MS`, `PI_SUBAGENT_GC_DAYS` (default `7`), `PI_SUBAGENT_PROVIDER`, `PI_SUBAGENT_MODEL`.
+
+The extension has a Node test suite in `.pi/extensions/subagent/test/` (no build step):
+
+```bash
+.pi/extensions/subagent/test/setup-deps.sh   # link the global pi packages into node_modules
+node --test --test-force-exit .pi/extensions/subagent/test/*.test.ts
+```
+
+It is registered in `.pi/config/quality.yaml` as `extension_test` / `extension-coverage` (both optional); the Python gate remains the required one. See `.pi/extensions/subagent/test/README.md`.

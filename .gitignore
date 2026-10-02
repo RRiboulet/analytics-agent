@@ -219,3 +219,10 @@ __marimo__/
 
 # Local pi todo state (extension: .pi/extensions/todos.ts)
 .pi/todos/
+
+# Dependency shim for pi extension tests. The shim symlinks the globally
+# installed pi packages into node_modules so `node --test` can resolve the
+# extension's imports without a build step or an install.
+# See .pi/extensions/subagent/test/setup-deps.sh
+node_modules/@earendil-works/
+node_modules/typebox

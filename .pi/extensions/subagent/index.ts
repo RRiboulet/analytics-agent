@@ -27,6 +27,18 @@
 //     cost per run in `subagent_status`, notifications, and the dashboard.
 //  8. `/subagents` dashboard: live overlay listing runs with pane/output
 //     preview, cancel, and attach-command copy.
+//  9. Testability: a `__test__` export block at the end of this file exposes
+//     the module-private helpers so test/*.test.ts can cover them. It is not
+//     used by the extension at runtime, but it IS load-bearing for the test
+//     suite -- do not drop it when re-vendoring. test/export.test.ts asserts
+//     it is still present.
+// 10. KNOWN ISSUE (found by the test suite, unfixed): a watchTick already in
+//     flight when session_shutdown clears the timer map re-arms its own 500ms
+//     timer afterwards, and nothing will ever clear that one again. The parent
+//     process can therefore keep polling (and calling tmux via pi.exec) after
+//     shutdown. It is visible in tests as a runner that will not exit, which
+//     is why they run with `node --test-force-exit`. Fixing it means gating
+//     watchTick on a shutdown flag; do not paper over it in the tests.
 //
 // `--attach-subagent <id>` and the child reporter (CHILD_ENV) are unchanged.
 
@@ -1172,3 +1184,30 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		},
 	});
 }
+
+// Internals exposed for unit tests. See local patch 9 in the header comment.
+// Nothing here is used by the extension at runtime.
+export const __test__ = {
+	abortableDelay,
+	attachFlagValue,
+	findLastAssistant,
+	formatDuration,
+	isSameOrDescendant,
+	isTerminal,
+	readBooleanEnv,
+	readIntEnv,
+	readNonNegativeIntEnv,
+	resolveModel,
+	runSummary,
+	shellQuote,
+	textFromAssistant,
+	tmuxSessionName,
+	tmuxSocketPath,
+	trimPane,
+	truncateToolText,
+	updateTmuxCommands,
+	validateCwd,
+	writeJsonAtomic,
+};
+
+export type { ChildResult, RunRecord, RunStatus };
