@@ -26,6 +26,16 @@ cp /workspace/.devcontainer/pi/models.json /home/vscode/.pi/agent/models.json
 sudo chown -R vscode:vscode /home/vscode/.pi
 sudo chown -R vscode:vscode /workspace
 
+# --- clipboard ---
+# The host injects WAYLAND_DISPLAY and DISPLAY into the container, but neither
+# socket exists here. pi's clipboard helper then finds no wl-copy/xclip and
+# reports the clipboard as unavailable. Install the OSC 52 shim under all three
+# names so whichever it tries works, and the outer terminal owns the clipboard.
+sudo install -m 0755 /workspace/.devcontainer/shell/osc52-clipboard /usr/local/bin/osc52-clipboard
+for helper in wl-copy xclip xsel; do
+  sudo ln -sf /usr/local/bin/osc52-clipboard "/usr/local/bin/$helper"
+done
+
 # --- project setup ---
 cp analytics-agent/.env.example analytics-agent/.env
 cd analytics-agent
