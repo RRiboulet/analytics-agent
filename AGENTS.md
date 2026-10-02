@@ -65,6 +65,15 @@ The sequence is not strictly linear — later phases may return to planning, imp
 
 The project quality configuration lives at `.pi/config/quality.yaml` (commands run from `analytics-agent/` unless declared otherwise). Coverage is measured for new/changed executable code via pytest-cov, targeting the configured line/branch thresholds.
 
+## Subagents
+
+Subagents are non-blocking. `subagent` returns immediately; the main session stays interactive while children run in their own tmux sessions.
+
+* Start every independent task at once, then keep working. Do not serialize tasks that could have run in parallel.
+* Inspect progress with `subagent_status`, which is also non-blocking.
+* **Do not call `subagent_wait` unless the user explicitly asks you to wait.** It blocks the main agent until runs finish, which defeats the point of delegating. Reading a result early is not a reason to wait; collect it when you actually need it.
+* Concurrency is capped by `PI_SUBAGENT_MAX_CONCURRENT` (default 4). Runs beyond the cap are queued and start automatically as slots free up, so a "queued" result is not a failure.
+
 ## Development Philosophy
 
 The project is being developed incrementally.
