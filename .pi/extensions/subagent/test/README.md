@@ -11,13 +11,14 @@ in the loop, so type errors are not caught here.
 .pi/extensions/subagent/test/setup-deps.sh
 
 # 2. Run the suite from the repository root
-node --test --test-force-exit .pi/extensions/subagent/test/*.test.ts
+node --test .pi/extensions/subagent/test/*.test.ts
 ```
 
-`--test-force-exit` is required: a `watchTick` already in flight during
-`session_shutdown` clears the timer map and then re-arms a timer nothing will
-clear again. That is a real (small) leak in the extension, recorded as local
-patch 10 in its header — the flag only stops the test runner waiting on it.
+No `--test-force-exit` is needed: `session_shutdown` sets a `shuttingDown` flag
+that stops the watcher from re-arming its poll timer (local patch 10 in
+`index.ts`), so the suite drains its event loop and exits on its own.
+`lifecycle.test.ts` pins that behaviour with a regression test that asserts no
+further `pi.exec` calls happen after shutdown.
 
 The suite is safe to run from inside a pi subagent child: `createHarness` clears
 `PI_TMUX_SUBAGENT_CHILD` / `PI_TMUX_SUBAGENT_RESULT`, which the extension factory
@@ -33,7 +34,7 @@ test.
 | `tmux.test.ts` | tmux session/socket naming, command construction, `--attach-subagent` parsing |
 | `status.test.ts` | `runSummary`, `isTerminal`, `formatDuration`, `trimPane`, `truncateToolText`, `textFromAssistant` |
 | `usage.test.ts` | child session usage/cost accounting |
-| `lifecycle.test.ts` | launch, concurrency queueing, finalisation, failure detection, cancel, wait, status, clean |
+| `lifecycle.test.ts` | launch, concurrency queueing, finalisation, failure detection, cancel, wait, status, clean, shutdown stops the watcher |
 | `helpers.ts` | env/temp-dir isolation and polling helpers |
 
 `lifecycle.test.ts` drives the real extension factory with a fake

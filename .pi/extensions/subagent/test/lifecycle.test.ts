@@ -7,13 +7,9 @@
 //
 // Risk covered: the watcher and the concurrency queue are fire-and-forget async
 // (`void watchTick(run)`, `void drainQueue()`), which is exactly where a race or
-// a lost timer silently strands a run.
-//
-// Run with `--test-force-exit`: watchTick re-arms its own timer, so a tick that
-// was already in flight when `session_shutdown` cleared the timer map re-adds an
-// orphan timer afterwards and keeps the event loop alive. Exiting the runner
-// explicitly keeps the suite terminating; it is a test-runner flag only and does
-// not change any product behaviour.
+// a lost timer silently strands a run. The shutdown test at the bottom pins the
+// other half of that race: a tick in flight must not re-arm its timer after
+// `session_shutdown` has cleared the timer map.
 
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
@@ -41,6 +37,8 @@ interface HarnessOptions {
 	maxConcurrent?: string;
 	paneText?: string;
 	paneDead?: boolean;
+	/** Artificial delay (ms) added to every tmux call, so a shutdown can land while a watcher tick is mid-flight. */
+	execDelayMs?: number;
 }
 
 async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -66,6 +64,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
 		},
 		exec: async (command: string, args: string[]) => {
 			execCalls.push({ command, args });
+			if (options.execDelayMs) await new Promise((resolve) => setTimeout(resolve, options.execDelayMs));
 			const joined = args.join(" ");
 			if (joined.includes("-V")) return { code: 0, stdout: "tmux 3.3a", stderr: "" };
 			if (joined.includes("capture-pane")) {
@@ -382,6 +381,63 @@ test("subagent_clean reaps finished runs but leaves active ones alone", async ()
 
 		const stillThere = (await h.readRuns()).find((run) => run.id === active.id);
 		assert.equal(stillThere?.status, "running");
+	});
+});
+
+test("session_shutdown stops the watcher from polling tmux again", async () => {
+	// Regression test for the post-shutdown timer leak (local patch 10).
+	// A run that is still `running` has a live 500ms watcher. Shutting down while
+	// a tick is in flight used to leave an orphan timer behind that nothing would
+	// ever clear: the parent kept calling `pi.exec` (capture-pane) forever and kept
+	// the event loop alive, so the suite needed `--test-force-exit`. The delay makes
+	// the race deterministic: shutdown happens while the tick awaits `pi.exec`.
+	// Assert on observable behaviour, not on timer internals.
+	await withTempAgentDir(async () => {
+		const harness = await createHarness({ execDelayMs: 400 });
+		try {
+			await harness.call("subagent", { task: "watched at shutdown" });
+			// A capture-pane call is recorded before the fake applies the delay, so
+			// this returns while that tick is still awaiting.
+			await waitFor(async () => harness.execCalls.some((call) => call.args.includes("capture-pane")));
+
+			await harness.shutdown();
+			// The in-flight tick legitimately finishes its remaining calls after the
+			// shutdown flag is set; what must not happen is a *new* poll.
+			await new Promise((resolve) => setTimeout(resolve, 1_500));
+			const callsAfterTick = harness.execCalls.length;
+			await new Promise((resolve) => setTimeout(resolve, 2_000));
+
+			const after = harness.execCalls.slice(callsAfterTick);
+			assert.equal(after.length, 0, `no tmux calls after shutdown, got: ${JSON.stringify(after)}`);
+			assert.ok(!after.some((call) => call.args.includes("capture-pane")), "the watcher must not poll the pane again");
+		} finally {
+			await harness.shutdown();
+		}
+	});
+});
+
+test("the shutdown flag is per extension load, not global", async () => {
+	// The fix lives in the factory closure. If it leaked across loads, a session
+	// that shut down would leave every later extension instance permanently
+	// unable to watch a run. createHarness calls the factory again, so a fresh
+	// instance must poll normally after the previous one was shut down.
+	await withTempAgentDir(async () => {
+		const first = await createHarness();
+		try {
+			await first.call("subagent", { task: "old instance" });
+			await waitFor(async () => first.execCalls.some((call) => call.args.includes("capture-pane")));
+			await first.shutdown();
+		} finally {
+			await first.shutdown();
+		}
+
+		const second = await createHarness();
+		try {
+			await second.call("subagent", { task: "new instance" });
+			await waitFor(async () => second.execCalls.some((call) => call.args.includes("capture-pane")));
+		} finally {
+			await second.shutdown();
+		}
 	});
 });
 

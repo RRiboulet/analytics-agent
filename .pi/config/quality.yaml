@@ -74,14 +74,14 @@ commands:
     # index.ts is far from the 100% target below, so making it required now
     # would fail the gate for reasons unrelated to any change under review.
     - name: "extension-coverage"
-      command: "node --test --test-force-exit --experimental-test-coverage .pi/extensions/subagent/test/*.test.ts"
+      command: "node --test --experimental-test-coverage .pi/extensions/subagent/test/*.test.ts"
       working_directory: "."
       timeout_seconds: 600
       required: false
 
   extension_test:
     - name: "extension-tests"
-      command: "node --test --test-force-exit .pi/extensions/subagent/test/*.test.ts"
+      command: "node --test .pi/extensions/subagent/test/*.test.ts"
       working_directory: "."
       timeout_seconds: 600
       required: false

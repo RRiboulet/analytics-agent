@@ -32,13 +32,16 @@
 //     used by the extension at runtime, but it IS load-bearing for the test
 //     suite -- do not drop it when re-vendoring. test/export.test.ts asserts
 //     it is still present.
-// 10. KNOWN ISSUE (found by the test suite, unfixed): a watchTick already in
-//     flight when session_shutdown clears the timer map re-arms its own 500ms
-//     timer afterwards, and nothing will ever clear that one again. The parent
-//     process can therefore keep polling (and calling tmux via pi.exec) after
-//     shutdown. It is visible in tests as a runner that will not exit, which
-//     is why they run with `node --test-force-exit`. Fixing it means gating
-//     watchTick on a shutdown flag; do not paper over it in the tests.
+// 10. Shutdown stops the watcher: a `shuttingDown` flag in the factory closure
+//     is set by `session_shutdown` and checked both at `watchTick` entry and
+//     just before it re-arms its 500ms timer (plus in `scheduleWatch` and
+//     `scheduleReap`). Without it, a tick already in flight when shutdown
+//     cleared the timer map re-armed a timer that nothing would ever clear, so
+//     the parent kept polling tmux via `pi.exec` after shutdown and kept the
+//     event loop alive (which is why the tests used to need
+//     `--test-force-exit`). The flag is per factory invocation, so it is false
+//     again on the next extension load; `loadPersistedRuns` still re-arms
+//     watchers for `running` runs.
 //
 // `--attach-subagent <id>` and the child reporter (CHILD_ENV) are unchanged.
 
@@ -450,6 +453,12 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	const runs = new Map<string, RunRecord>();
 	const timers = new Map<string, ReturnType<typeof setTimeout>>();
 	const reapTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	// Set by session_shutdown. The watcher deletes its own timer from the map at
+	// the start of a tick and re-arms one at the end, so a tick already in flight
+	// when shutdown clears the map would otherwise re-arm a timer nothing will
+	// ever clear again. The flag lives in the factory closure, so it starts false
+	// again for every fresh extension load.
+	let shuttingDown = false;
 	let sessionId = "";
 	let sessionRunsDir = "";
 	let runsIndexPath = "";
@@ -492,7 +501,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	};
 
 	const scheduleReap = (run: RunRecord): void => {
-		if (!autoReap) return;
+		if (!autoReap || shuttingDown) return;
 		const existing = reapTimers.get(run.id);
 		if (existing) clearTimeout(existing);
 		if (reapDelayMs <= 0) {
@@ -571,6 +580,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 
 	const watchTick = async (run: RunRecord): Promise<void> => {
 		timers.delete(run.id);
+		if (shuttingDown) return;
 		if (isTerminal(run.status)) return;
 
 		try {
@@ -612,6 +622,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			console.error(`[tmux-subagent] watch error for ${run.id}: ${error instanceof Error ? error.message : String(error)}`);
 		}
 
+		if (shuttingDown) return;
 		const timer = setTimeout(() => {
 			void watchTick(run);
 		}, POLL_INTERVAL_MS);
@@ -619,7 +630,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	};
 
 	const scheduleWatch = (run: RunRecord): void => {
-		if (timers.has(run.id)) return;
+		if (shuttingDown || timers.has(run.id)) return;
 		const timer = setTimeout(() => {
 			void watchTick(run);
 		}, POLL_INTERVAL_MS);
@@ -759,6 +770,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async () => {
+		shuttingDown = true;
 		for (const timer of timers.values()) clearTimeout(timer);
 		timers.clear();
 		for (const timer of reapTimers.values()) clearTimeout(timer);
