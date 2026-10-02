@@ -53,31 +53,17 @@ Do not implement future milestones unless explicitly requested.
 
 ## Development Workflow
 
-The project uses the bundled agent-skill suite in `.pi/skills/`. Use skills according to the phase of the task:
+For a substantial change, work through these phases:
 
-* **`understand-and-plan`** — start of any substantial change: investigate, assess repository impact and risk, establish a baseline, and produce a safe plan.
-* **`clean-implementation`** — implement the smallest complete change that fits the project's architecture and conventions.
-* **`comprehensive-testing`** — design meaningful risk-based tests with coverage evidence for new/changed code.
-* **`automated-quality-checks`** — run the repository's configured checks declared in `.pi/config/quality.yaml`.
-* **`final-review-and-validation`** — compare the final diff with requirements, run the final gate, and report evidence and residual risks.
+1. **Understand and plan** — investigate, assess repository impact and risk, establish a baseline, and produce a safe implementation and validation plan.
+2. **Implement** — make the smallest complete change that fits the project's architecture, conventions, contracts, and compatibility requirements.
+3. **Test** — design meaningful risk-based tests with coverage evidence for new/changed code.
+4. **Run the quality checks** — run the repository's configured checks declared in `.pi/config/quality.yaml`.
+5. **Final review** — compare the final diff with requirements, run the final gate, and report evidence and residual risks.
 
-For a substantial change, the preferred workflow is:
+The sequence is not strictly linear — later phases may return to planning, implementation, or testing when evidence reveals a gap. Do not run every phase mechanically for trivial changes.
 
-```text
-understand-and-plan
-        ↓
-clean-implementation
-        ↓
-comprehensive-testing
-        ↓
-automated-quality-checks
-        ↓
-final-review-and-validation
-```
-
-The project quality configuration lives at `.pi/config/quality.yaml`; the skills read their commands from that file (working directory is `analytics-agent/`). Coverage is measured for new/changed executable code via pytest-cov, targeting the configured line/branch thresholds.
-
-The sequence is not strictly linear — later phases may return to planning, implementation, or testing when evidence reveals a gap. Do not invoke every skill mechanically for trivial changes. Use the skills when their scope applies.
+The project quality configuration lives at `.pi/config/quality.yaml` (commands run from `analytics-agent/` unless declared otherwise). Coverage is measured for new/changed executable code via pytest-cov, targeting the configured line/branch thresholds.
 
 ## Development Philosophy
 
