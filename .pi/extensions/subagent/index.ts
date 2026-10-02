@@ -42,8 +42,16 @@
 //     `--test-force-exit`). The flag is per factory invocation, so it is false
 //     again on the next extension load; `loadPersistedRuns` still re-arms
 //     watchers for `running` runs.
+// 11. Liveness: the child writes a throttled activity snapshot to
+//     `<runDir>/activity.json` (see activity.ts) and the watcher reads it on
+//     every tick, so `subagent_status` can report a live phase
+//     (starting/active/waiting/done) with the current scope and tool. The
+//     snapshot path is derived from the result path the child already receives,
+//     so no extra environment variable is needed. It is diagnostic only:
+//     completion, cancellation and failure never depend on it.
 //
-// `--attach-subagent <id>` and the child reporter (CHILD_ENV) are unchanged.
+// The child reporter (CHILD_ENV) still reports completion the same way; patch 11
+// only adds the activity snapshot to it.
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -63,6 +71,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import {
+	createActivityRecorder,
+	getActivityFilePath,
+	readActivityFile,
+	type SubagentActivityPhase,
+	type SubagentActivityScope,
+} from "./activity.ts";
 import { formatUsage, readSessionUsage, type RunUsage } from "./usage.ts";
 
 const ATTACH_FLAG = "attach-subagent";
@@ -93,6 +108,14 @@ interface ChildResult {
 	finishedAt: number;
 }
 
+interface RunActivity {
+	phase: SubagentActivityPhase;
+	scope?: SubagentActivityScope;
+	toolName?: string;
+	sequence: number;
+	updatedAt: number;
+}
+
 interface RunRecord {
 	id: string;
 	task: string;
@@ -117,6 +140,8 @@ interface RunRecord {
 	error?: string;
 	sessionFile?: string;
 	usage?: RunUsage;
+	/** Latest child activity snapshot, reduced to what the parent needs. */
+	activity?: RunActivity;
 }
 
 function shellQuote(value: string): string {
@@ -274,8 +299,21 @@ async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> 
 	await rename(temporaryPath, filePath);
 }
 
-function registerChildReporter(pi: ExtensionAPI, resultPath: string): void {
+function registerChildReporter(pi: ExtensionAPI, resultPath: string, runId: string): void {
 	let reported = false;
+
+	// Liveness snapshot (local patch 11). The path is derived from the result
+	// path the child was already given, so nothing new crosses the environment
+	// boundary. A recorder failure must never affect the run, so every handler
+	// only awaits the recorder and swallows its errors.
+	const recorder = createActivityRecorder({
+		filePath: getActivityFilePath(path.dirname(resultPath)),
+		childId: runId,
+		write: writeJsonAtomic,
+		onError: (error) => {
+			console.error(`[tmux-subagent] activity write failed: ${error instanceof Error ? error.message : String(error)}`);
+		},
+	});
 
 	const report = async (ctx: ExtensionContext, fallbackError?: string): Promise<void> => {
 		if (reported) return;
@@ -306,6 +344,15 @@ function registerChildReporter(pi: ExtensionAPI, resultPath: string): void {
 		}
 	};
 
+	pi.on("session_start", () => recorder.sessionStart());
+	pi.on("input", () => recorder.input());
+	pi.on("before_provider_request", () => recorder.providerRequest());
+	pi.on("after_provider_response", () => recorder.providerResponse());
+	pi.on("message_update", () => recorder.messageUpdate());
+	pi.on("tool_execution_start", (event) => recorder.toolStart(event.toolName));
+	pi.on("tool_execution_update", (event) => recorder.toolUpdate(event.toolName));
+	pi.on("tool_execution_end", (event) => recorder.toolEnd(event.toolName));
+
 	// agent_settled was added after older peer type declarations but is present
 	// in the Pi runtime this extension targets.
 	(
@@ -314,11 +361,15 @@ function registerChildReporter(pi: ExtensionAPI, resultPath: string): void {
 			handler: (event: unknown, ctx: ExtensionContext) => void | Promise<void>,
 		) => void
 	)("agent_settled", async (_event, ctx) => {
+		// Flush the terminal snapshot first: the parent treats result.json as the
+		// completion signal, so the "done" phase must be on disk before it lands.
+		await recorder.settled().catch(() => undefined);
 		await report(ctx);
 		ctx.shutdown();
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		if (!reported) await recorder.shutdown().catch(() => undefined);
 		if (!reported) await report(ctx, "Subagent session shut down before the task settled.");
 	});
 }
@@ -409,14 +460,26 @@ function resolveModel(
 	return { provider, model };
 }
 
+function formatActivity(activity: RunActivity | undefined): string | undefined {
+	if (!activity) return undefined;
+	const parts = [activity.phase];
+	if (activity.scope) parts.push(activity.scope);
+	if (activity.toolName) parts.push(`(${activity.toolName})`);
+	return parts.join(" ");
+}
+
 function runSummary(run: RunRecord, options: { pane?: boolean; output?: boolean } = {}): string {
 	const duration = formatDuration(run.startedAt, run.finishedAt);
 	const usage = formatUsage(run.usage);
+	// Activity describes what the child is doing right now, so it is only
+	// meaningful while the run is live; a settled run has its own status.
+	const activity = isTerminal(run.status) ? undefined : formatActivity(run.activity);
 	const lines = [
 		`${run.id}  ${run.status}${duration ? ` · ${duration}` : ""}${usage ? ` · ${usage}` : ""}`,
 		`  task: ${run.task.split("\n", 1)[0]?.slice(0, 100) ?? run.task}`,
 		`  model: ${run.provider}/${run.model} (${run.thinking})`,
 	];
+	if (activity) lines.push(`  activity: ${activity}`);
 	lines.push(`  tmux: ${run.tmuxSession}`, `  attach: ${run.attachCommand}`);
 	if (run.sessionFile) lines.push(`  child session: ${run.sessionFile}`);
 	if (options.pane && run.pane) lines.push("", run.pane);
@@ -439,7 +502,8 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			console.error(`[tmux-subagent] ${RESULT_ENV} is required in child mode.`);
 			return;
 		}
-		registerChildReporter(pi, resultPath);
+		// The run id is the run directory name: <agentDir>/tmux-subagents/<session>/<run>/result.json.
+		registerChildReporter(pi, resultPath, path.basename(path.dirname(resultPath)));
 		return;
 	}
 
@@ -452,6 +516,9 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 
 	const runs = new Map<string, RunRecord>();
 	const timers = new Map<string, ReturnType<typeof setTimeout>>();
+	// The last activity string written to runs.json, so a chatty child does not
+	// rewrite the index when nothing visible changed.
+	const activitySignatures = new Map<string, string>();
 	const reapTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	// Set by session_shutdown. The watcher deletes its own timer from the map at
 	// the start of a tick and re-arms one at the end, so a tick already in flight
@@ -588,6 +655,31 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 			if (result) {
 				await finalizeRun(run, result);
 				return;
+			}
+
+			// Liveness (local patch 11): the child's activity snapshot is advisory.
+			// A missing, malformed or mismatched file simply means "not observed".
+			const activity = await readActivityFile(getActivityFilePath(run.runDir), run.id);
+			if (activity.ok) {
+				const observed = activity.activity;
+				// Never regress: a stale snapshot from an earlier write, or one
+				// that survived a reload, must not overwrite newer state.
+				if (observed.sequence > (run.activity?.sequence ?? -1)) {
+					run.activity = {
+						phase: observed.phase,
+						scope: observed.activeScope,
+						toolName: observed.toolName,
+						sequence: observed.sequence,
+						updatedAt: observed.updatedAt,
+					};
+					// Persist only what the summary actually renders, so a chatty
+					// child does not rewrite runs.json twice a second.
+					const signature = formatActivity(run.activity) ?? "";
+					if (signature !== activitySignatures.get(run.id)) {
+						activitySignatures.set(run.id, signature);
+						await persist();
+					}
+				}
 			}
 
 			const paneResult = await pi.exec("tmux", tmuxArgs("capture-pane", "-p", "-J", "-t", run.tmuxTarget), {
@@ -902,7 +994,7 @@ export default function subagentExtension(pi: ExtensionAPI): void {
 		name: "subagent_status",
 		label: "Subagent Status",
 		description:
-			"List subagent runs started in this session or inspect one by id. Returns status, model, tmux attach command, latest pane output while running, and the final output once finished. Non-blocking.",
+			"List subagent runs started in this session or inspect one by id. Returns status, model, tmux attach command, the child's live activity phase (starting/active/waiting/done) with its current scope and tool while running, latest pane output while running, and the final output once finished. Non-blocking.",
 		promptSnippet: "Inspect non-blocking subagent runs and their output",
 		parameters: Type.Object({
 			id: Type.Optional(Type.String({ description: "Run id to inspect. Omit to list all runs in this session." })),

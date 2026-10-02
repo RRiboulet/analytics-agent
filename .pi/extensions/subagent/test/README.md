@@ -44,18 +44,18 @@ directory, so the tests never touch the real `~/.pi/agent` tree.
 
 ## Not covered here
 
-Roughly 28% of `index.ts` lines are still untested. The gaps, in rough order of
+About 20% of `index.ts` lines are still untested. The gaps, in rough order of
 size:
 
-- **the `/subagents` dashboard** (`index.ts` ~1061-1176) — the handler is never
+- **the `/subagents` dashboard** (`index.ts` ~1169-1287) — the handler is never
   invoked, because the harness stubs `registerCommand`. Layout, selection and
   the refresh interval are not covered.
-- **`registerChildReporter`** (~250-314) — the entire child branch: atomic
-  result writing, `agent_settled` handling, the shutdown fallback. Exercising it
-  needs a real child pi process.
-- **`attachToSubagentAndExit`** (~179-222) — ends in `process.exit`, so it needs
+- **`registerChildReporter`** (~302-400) — its activity wiring is exercised
+  (the harness fires the events and reads the snapshot back), but the atomic
+  result writing and the shutdown fallback still need a real child pi process.
+- **`attachToSubagentAndExit`** (~214-270) — ends in `process.exit`, so it needs
   a real terminal; the legacy `v1.` target decode is untested.
-- **`subagent_clean` `all_sessions` / `delete_files`** (~1009-1024) — only the
+- **`subagent_clean` `all_sessions` / `delete_files`** (~1119-1135) — only the
   in-session path is covered.
 - **long-poll behaviour** — the fake always reports `pane_dead = "1"`, so
   "pane still alive, keep waiting" is untested; `pi.exec`'s `timeout` option is
