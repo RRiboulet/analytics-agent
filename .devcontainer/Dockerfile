@@ -8,7 +8,10 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
-RUN npm install -g @earendil-works/pi-coding-agent
+ARG PI_AGENT_VERSION=latest 
+RUN npm cache clean --force \                                                                                                                                      
+       && npm install -g --no-audit --no-fund "@earendil-works/pi-coding-agent@${PI_AGENT_VERSION}" \                                                                 
+       && pi --version  
 
 # Docker-in-Docker + tooling needed by the Factory Data MCP demo
 # (MCP server on :8000, PostgreSQL on :5432 via the project's docker-compose).
