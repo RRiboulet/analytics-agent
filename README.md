@@ -16,7 +16,7 @@ The long-term goal is an **Autonomous Analytics Manager**; see [`PLAN.md`](PLAN.
 | `analytics-agent/` | The project home: MCP server, analytics agent, DB init scripts, tests |
 | `PLAN.md` | Project plan, milestones, architectural decisions |
 | `AGENTS.md` | Instructions for coding agents working in this repo |
-| `.pi/` | Bundled agent skills, pi extensions, and the quality-check configuration |
+| `.pi/` | Pi extensions and the quality-check configuration |
 | `.devcontainer/` | VSCode Dev Container definition |
 
 ## Documentation
