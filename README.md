@@ -31,7 +31,9 @@ The project is developed inside a VSCode Dev Container providing Python 3.13, `u
 
 ## Pi agent extensions
 
-The repo vendors project-local pi extensions in `.pi/extensions/`. The `subagent` extension lets the main agent delegate isolated tasks to child pi processes that run in detached `tmux` sessions:
+The pi extensions and skills come from the shared, versioned package declared in `.pi/settings.json` (`git:github.com/RRiboulet/my-agent-setup@v1.4.0`), not from a vendored copy. Because it is a project package, pi installs and loads it only after project trust is granted, so pi asks on the first run in a fresh container.
+
+The package's `subagent` extension lets the main agent delegate isolated tasks to child pi processes that run in detached `tmux` sessions:
 
 - `subagent` starts a child and returns immediately, so the main agent is **not blocked** and can launch more subagents or keep working. Runs execute concurrently (bounded by `PI_SUBAGENT_MAX_CONCURRENT`, default `4`).
 - `subagent_status` inspects runs and their output; `subagent_wait` blocks for selected runs; `subagent_cancel` stops one; `subagent_clean` reaps finished tmux sessions/run dirs. While a run is live, `subagent_status` also reports the child's **activity phase** (`starting`/`active`/`waiting`/`done`) with its current scope and tool, read from a throttled snapshot the child writes next to its result file.
@@ -41,11 +43,4 @@ The repo vendors project-local pi extensions in `.pi/extensions/`. The `subagent
 
 Relevant environment variables: `PI_SUBAGENT_MAX_CONCURRENT`, `PI_SUBAGENT_NOTIFY` (default `true`), `PI_SUBAGENT_KILL_ON_SHUTDOWN` (default `false`), `PI_SUBAGENT_AUTO_REAP` (default `true`), `PI_SUBAGENT_REAP_DELAY_MS`, `PI_SUBAGENT_GC_DAYS` (default `7`), `PI_SUBAGENT_PROVIDER`, `PI_SUBAGENT_MODEL`.
 
-The extension has a Node test suite in `.pi/extensions/subagent/test/` (no build step):
-
-```bash
-.pi/extensions/subagent/test/setup-deps.sh   # link the global pi packages into node_modules
-node --test --test-force-exit .pi/extensions/subagent/test/*.test.ts
-```
-
-It is registered in `.pi/config/quality.yaml` as `extension_test` / `extension-coverage` (both optional); the Python gate remains the required one. See `.pi/extensions/subagent/test/README.md`.
+The package keeps its own Node test suite (see `.pi/extensions/subagent/test/` in [RRiboulet/my-agent-setup](https://github.com/RRiboulet/my-agent-setup)); this repo's required gate is the Python suite declared in `.pi/config/quality.yaml`.

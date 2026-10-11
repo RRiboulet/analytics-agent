@@ -27,6 +27,8 @@ The container provides:
 
 On container startup, the project environment is prepared and the PostgreSQL service is started.
 
+The pi extensions and skills are not vendored here. They come from the shared package declared in `.pi/settings.json` (`git:github.com/RRiboulet/my-agent-setup@v1.4.0`). Because project packages require project trust, pi installs and loads them only after trust is granted.
+
 ## Working Directory
 
 Coordination and planning docs (`AGENTS.md`, `PLAN.md`) live at the repo root `/workspace`.
