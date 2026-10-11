@@ -62,11 +62,23 @@ for helper in wl-copy xclip xsel; do
 done
 
 # --- project setup ---
-cp analytics-agent/.env.example analytics-agent/.env
+# `.env` holds local secrets (an OpenRouter key, Langfuse keys) and postCreate
+# runs on every recreate, so only seed it on first run — never clobber local edits.
+if [ ! -f analytics-agent/.env ]; then
+  cp analytics-agent/.env.example analytics-agent/.env
+fi
+
 cd analytics-agent
 uv sync 2>&1 | tail -5
+
 docker compose -f docker-compose.yml up -d postgres
-sleep 8
-curl -s http://localhost:5432/ || true
+
+# Wait for Postgres to accept connections before reporting ready. `pg_isready`
+# is the real readiness probe; the previous `curl http://localhost:5432/` spoke
+# HTTP at a Postgres socket and could never succeed.
+for _ in $(seq 1 30); do
+  docker compose -f docker-compose.yml exec -T postgres pg_isready -U olist_admin -d olist >/dev/null 2>&1 && break
+  sleep 2
+done
 echo
 echo 'Analytics Agent ready: MCP on http://localhost:8000/mcp, Postgres on http://localhost:5432/'
