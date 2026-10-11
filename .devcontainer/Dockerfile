@@ -8,20 +8,30 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
 
-RUN npm install -g @earendil-works/pi-coding-agent
+# Pin the coding agent: the shared my-agent-setup package is built and
+# tested against pi 1.1.0, so a floating install can break its extensions
+# on a rebuild. Bump this and the .pi/settings.json package pin together.
+ARG PI_AGENT_VERSION=1.1.0
+RUN npm cache clean --force \
+    && npm install -g --no-audit --no-fund "@earendil-works/pi-coding-agent@${PI_AGENT_VERSION}" \
+    && pi --version
 
 # Docker-in-Docker + tooling needed by the Factory Data MCP demo
 # (MCP server on :8000, PostgreSQL on :5432 via the project's docker-compose).
+# Docker itself (daemon, CLI, compose plugin) comes from the docker-in-docker
+# devcontainer feature; installing Debian's `docker.io` here as well is
+# redundant and risks version skew with the feature's docker-ce.
 # API testing: `http :8000/health` or `http POST :8000/api/foo name=test`
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get install -y \
-        docker.io \
         dbus \
         init \
         procps \
         slirp4netns \
         curl \
-        httpie \ 
+        httpie \
+        jq \
+        tmux \
     && rm -rf /var/lib/apt/lists/*
 
 # Powerlevel10k (standalone; no Oh My Zsh required)
@@ -50,11 +60,8 @@ RUN git config --system alias.st status \
     && git config --system alias.last 'log -1 HEAD --stat' \
     && git config --system alias.lg 'log --oneline --decorate --graph -20'
 
-# Pre-create the project venv and install dependencies for the MCP demo
-# so the environment is ready without a manual `uv sync`.
-COPY analytics-agent/pyproject.toml \
-    analytics-agent/uv.lock \
-    analytics-agent/README.md \
-    /workspace/analytics-agent/
-
-RUN cd /workspace/analytics-agent && uv venv && uv sync --all-groups
+# NOTE: do not pre-build the project venv here. Compose bind-mounts the repo
+# over /workspace (`..:/workspace` in docker-compose.yml), which shadows
+# anything an image layer writes under /workspace. A build-time `uv venv &&
+# uv sync` would therefore be discarded and silently repeated at runtime by
+# postCreate. The venv is created by postCreate.sh, in the mounted workspace.

@@ -27,6 +27,8 @@ The container provides:
 
 On container startup, the project environment is prepared and the PostgreSQL service is started.
 
+The pi extensions and skills are not vendored here. They come from the shared package declared in `.pi/settings.json` (`git:github.com/RRiboulet/my-agent-setup@v1.4.0`). Because project packages require project trust, pi installs and loads them only after trust is granted.
+
 ## Working Directory
 
 Coordination and planning docs (`AGENTS.md`, `PLAN.md`) live at the repo root `/workspace`.
@@ -51,33 +53,14 @@ If implementation reveals that a decision in `PLAN.md` is incorrect, unsafe, unn
 
 Do not implement future milestones unless explicitly requested.
 
-## Development Workflow
+## Subagents
 
-The project uses the bundled agent-skill suite in `.pi/skills/`. Use skills according to the phase of the task:
+Subagents are non-blocking. `subagent` returns immediately; the main session stays interactive while children run in their own tmux sessions.
 
-* **`understand-and-plan`** — start of any substantial change: investigate, assess repository impact and risk, establish a baseline, and produce a safe plan.
-* **`clean-implementation`** — implement the smallest complete change that fits the project's architecture and conventions.
-* **`comprehensive-testing`** — design meaningful risk-based tests with coverage evidence for new/changed code.
-* **`automated-quality-checks`** — run the repository's configured checks declared in `.pi/config/quality.yaml`.
-* **`final-review-and-validation`** — compare the final diff with requirements, run the final gate, and report evidence and residual risks.
-
-For a substantial change, the preferred workflow is:
-
-```text
-understand-and-plan
-        ↓
-clean-implementation
-        ↓
-comprehensive-testing
-        ↓
-automated-quality-checks
-        ↓
-final-review-and-validation
-```
-
-The project quality configuration lives at `.pi/config/quality.yaml`; the skills read their commands from that file (working directory is `analytics-agent/`). Coverage is measured for new/changed executable code via pytest-cov, targeting the configured line/branch thresholds.
-
-The sequence is not strictly linear — later phases may return to planning, implementation, or testing when evidence reveals a gap. Do not invoke every skill mechanically for trivial changes. Use the skills when their scope applies.
+* Start every independent task at once, then keep working. Do not serialize tasks that could have run in parallel.
+* Inspect progress with `subagent_status`, which is also non-blocking.
+* **Do not call `subagent_wait` unless the user explicitly asks you to wait.** It blocks the main agent until runs finish, which defeats the point of delegating. Reading a result early is not a reason to wait; collect it when you actually need it.
+* Concurrency is capped by `PI_SUBAGENT_MAX_CONCURRENT` (default 4). Runs beyond the cap are queued and start automatically as slots free up, so a "queued" result is not a failure.
 
 ## Development Philosophy
 
