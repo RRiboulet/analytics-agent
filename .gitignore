@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Pi project-local package checkouts (declared in .pi/settings.json)
+.pi/git/
+.pi/npm/
+
+# Local pi todo state (the todos extension writes here)
+.pi/todos/
