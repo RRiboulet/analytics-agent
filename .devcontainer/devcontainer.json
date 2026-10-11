@@ -61,5 +61,5 @@
         }
     },
     "overrideCommand": false,
-    "initializeCommand": "cd analytics-agent && echo 'Python + uv + pi coding agent + analytics agent (Postgres via docker) ready!'"
+    "initializeCommand": "echo \"Python + uv + pi coding agent + analytics agent (Postgres via docker) ready!\""
 }
