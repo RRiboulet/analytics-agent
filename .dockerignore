@@ -1,0 +1,19 @@
+# The devcontainer build context is the repository root (compose sets
+# `context: ..` relative to .devcontainer/), so these patterns are matched
+# against the root. Docker's matcher does not descend into subdirectories for
+# a bare name, hence the `**/` prefixes — `**/` also matches zero directories,
+# so each pattern covers the top level as well as nested paths.
+**/.git
+**/.gitignore
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.venv
+**/venv
+**/env
+**/.pytest_cache
+**/.ruff_cache
+**/build
+**/dist
+**/.mcp
+**/.vscode
