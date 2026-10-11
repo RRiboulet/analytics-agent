@@ -53,20 +53,6 @@ If implementation reveals that a decision in `PLAN.md` is incorrect, unsafe, unn
 
 Do not implement future milestones unless explicitly requested.
 
-## Development Workflow
-
-For a substantial change, work through these phases:
-
-1. **Understand and plan** — investigate, assess repository impact and risk, establish a baseline, and produce a safe implementation and validation plan.
-2. **Implement** — make the smallest complete change that fits the project's architecture, conventions, contracts, and compatibility requirements.
-3. **Test** — design meaningful risk-based tests with coverage evidence for new/changed code.
-4. **Run the quality checks** — run the repository's configured checks declared in `.pi/config/quality.yaml`.
-5. **Final review** — compare the final diff with requirements, run the final gate, and report evidence and residual risks.
-
-The sequence is not strictly linear — later phases may return to planning, implementation, or testing when evidence reveals a gap. Do not run every phase mechanically for trivial changes.
-
-The project quality configuration lives at `.pi/config/quality.yaml` (commands run from `analytics-agent/` unless declared otherwise). Coverage is measured for new/changed executable code via pytest-cov, targeting the configured line/branch thresholds.
-
 ## Subagents
 
 Subagents are non-blocking. `subagent` returns immediately; the main session stays interactive while children run in their own tmux sessions.

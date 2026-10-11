@@ -16,7 +16,7 @@ The long-term goal is an **Autonomous Analytics Manager**; see [`PLAN.md`](PLAN.
 | `analytics-agent/` | The project home: MCP server, analytics agent, DB init scripts, tests |
 | `PLAN.md` | Project plan, milestones, architectural decisions |
 | `AGENTS.md` | Instructions for coding agents working in this repo |
-| `.pi/` | Pi extensions and the quality-check configuration |
+| `.pi/` | The pi package declaration (`.pi/settings.json`) |
 | `.devcontainer/` | VSCode Dev Container definition |
 
 ## Documentation
@@ -43,4 +43,4 @@ The package's `subagent` extension lets the main agent delegate isolated tasks t
 
 Relevant environment variables: `PI_SUBAGENT_MAX_CONCURRENT`, `PI_SUBAGENT_NOTIFY` (default `true`), `PI_SUBAGENT_KILL_ON_SHUTDOWN` (default `false`), `PI_SUBAGENT_AUTO_REAP` (default `true`), `PI_SUBAGENT_REAP_DELAY_MS`, `PI_SUBAGENT_GC_DAYS` (default `7`), `PI_SUBAGENT_PROVIDER`, `PI_SUBAGENT_MODEL`.
 
-The package keeps its own Node test suite (see `.pi/extensions/subagent/test/` in [RRiboulet/my-agent-setup](https://github.com/RRiboulet/my-agent-setup)); this repo's required gate is the Python suite declared in `.pi/config/quality.yaml`.
+The package keeps its own Node test suite (see `.pi/extensions/subagent/test/` in [RRiboulet/my-agent-setup](https://github.com/RRiboulet/my-agent-setup)); this repo's gate is the Python suite (`ruff format`, `ruff check`, `uv run pytest`).
