@@ -31,13 +31,18 @@ else
 fi
 
 # Copy the local model config for pi, merging providers so a personal provider
-# already in the volume is kept rather than replaced.
+# already in the volume is kept rather than replaced. If the existing file is
+# not mergeable (invalid JSON), leave it alone and say so rather than silently
+# replacing it with the repo's.
 MODELS=/home/vscode/.pi/agent/models.json
 if [ -f "$MODELS" ] && command -v jq >/dev/null 2>&1; then
-  jq -s '.[0] as $cur | .[1] as $repo | $cur * $repo | .providers = (($cur.providers // {}) * ($repo.providers // {}))' \
-    "$MODELS" /workspace/.devcontainer/pi/models.json > "$MODELS.tmp" \
-    && mv "$MODELS.tmp" "$MODELS" \
-    || cp /workspace/.devcontainer/pi/models.json "$MODELS"
+  if jq -s '.[0] as $cur | .[1] as $repo | $cur * $repo | .providers = (($cur.providers // {}) * ($repo.providers // {}))' \
+    "$MODELS" /workspace/.devcontainer/pi/models.json > "$MODELS.tmp"; then
+    mv "$MODELS.tmp" "$MODELS"
+  else
+    rm -f "$MODELS.tmp"
+    echo "postCreate: $MODELS is not mergeable; leaving it unchanged" >&2
+  fi
 else
   cp /workspace/.devcontainer/pi/models.json "$MODELS"
 fi

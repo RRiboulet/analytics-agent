@@ -43,6 +43,6 @@ The package's `subagent` extension lets the main agent delegate isolated tasks t
 
 Relevant environment variables: `PI_SUBAGENT_MAX_CONCURRENT`, `PI_SUBAGENT_NOTIFY` (default `true`), `PI_SUBAGENT_KILL_ON_SHUTDOWN` (default `false`), `PI_SUBAGENT_AUTO_REAP` (default `true`), `PI_SUBAGENT_REAP_DELAY_MS`, `PI_SUBAGENT_GC_DAYS` (default `7`), `PI_SUBAGENT_PROVIDER`, `PI_SUBAGENT_MODEL`.
 
-Besides `subagent`, the package provides the `answer`, `continue`, `goal`, `review`, `session-breakdown`, `repo-explorer` and `opencode-go-provider` extensions, and the shared `commit`, `github`, `librarian`, `tmux` and `update-changelog` skills.
+Besides `subagent`, the package provides the `answer`, `continue`, `goal`, `review`, `session-breakdown`, `repo-explorer` and `opencode-go-provider` extensions, and the shared `commit`, `github`, `librarian`, `native-web-search`, `tmux` and `update-changelog` skills.
 
 The package keeps its own Node test suite (see `.pi/extensions/subagent/test/` in [RRiboulet/my-agent-setup](https://github.com/RRiboulet/my-agent-setup)); this repo's gate is the Python suite (`ruff format`, `ruff check`, `uv run pytest`).
