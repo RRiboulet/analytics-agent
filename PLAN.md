@@ -1106,15 +1106,13 @@ Completed:
 * [x] **M7.3 — Synthesis** — grounded report + deterministic groundedness check; never ship a fabricated report.
 * [x] **M7.4 — Manager surface + observability** — `run_manager()` + CLI + `--out`, one shared capabilities/LLM client, nested Langfuse traces.
 * [x] **M7.5 — Inspect node** — one bounded follow-up round (≤1 round, ≤2 queries) decided by the model and validated deterministically; degrades (never fails) on budget exhaustion/unusable output; follow-up evidence flows into synthesis grounding.
+* [x] **M7.6 — Management-level evaluation extension** — structural grading (decomposition validity, follow-up budget, groundedness, completion, per-sub-analysis errors) for management scenarios in the M6 harness; `app/evaluation/manager_dataset.py`, `manager_runner.py`, `scripts/run_manager_evaluation.py`, `data/evaluation/manager_v1.yaml` (6 scenarios); tests; committed on `dev`.
 
 Next:
 
 * **M7 Stage A wrap-up** — first live end-to-end manager run against the
   real LLM (manual; decompose prompt quality + groundedness false-positive
   rate are the two open risks).
-* **M7.6** — management-level evaluation extension in the M6 harness
-  (structural grading: decomposition validity, groundedness, completion).
-
 * **M7 Stage A wrap-up** — first live end-to-end manager run against the
   real LLM (manual; decompose prompt quality + groundedness false-positive
   rate are the two open risks).
