@@ -146,6 +146,21 @@ Python version: 3.13.
 
 The virtual environment is located at `.venv/`.
 
+## Secrets and Environment Files
+
+- Never read, open, print, search, or otherwise inspect secret-bearing files,
+  including `.env`, `.env.*`, `*.key`, `*.pem`, credential stores, and similar.
+  These files (e.g. `.env`) contain live credentials and must remain private.
+- Reference only `.env.example` (or other checked-in templates) to learn the names
+  or shape of environment variables; never their values.
+- Never include secret values in responses, logs, commits, code, tool output, or
+  generated artifacts. If a command unexpectedly prints secrets, do not repeat or
+  summarize them; report only that secrets were exposed and recommend rotation.
+- Do not guess, reconstruct, or infer credential values. If a task needs a value
+  not available through the environment/configuration, ask the user.
+- Environment variables are already loaded into the process by the host/runtime;
+  read them through the application's settings, not via the files that define them.
+
 ## Code Quality
 
 Format:
