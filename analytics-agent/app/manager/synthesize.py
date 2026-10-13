@@ -51,10 +51,18 @@ GROUNDEDNESS_RELATIVE_TOLERANCE = 1e-6
 
 
 _ISO_DATE_LABEL = re.compile(r"(?:19|20)\d{2}-\d{1,2}(?:-\d{1,2})?")
+_MONTH_YEAR_LABEL = re.compile(
+    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?)\s+(?:19|20)\d{2}\b",
+    re.IGNORECASE,
+)
 
 
-def _iso_date_spans(text: str) -> list[tuple[int, int]]:
-    return [(m.start(), m.end()) for m in _ISO_DATE_LABEL.finditer(text)]
+def _label_spans(text: str) -> list[tuple[int, int]]:
+    spans = [(m.start(), m.end()) for m in _ISO_DATE_LABEL.finditer(text)]
+    spans.extend((m.start(), m.end()) for m in _MONTH_YEAR_LABEL.finditer(text))
+    return spans
 
 
 def extract_report_numbers(report: str) -> list[float]:
@@ -70,7 +78,7 @@ def extract_report_numbers(report: str) -> list[float]:
         # when it lies inside one of those full label shapes; ordinary ranges
         # such as "1-3" are left strictly grounded.
         if any(
-            start <= match.start() and match.end() <= end for start, end in _iso_date_spans(report)
+            start <= match.start() and match.end() <= end for start, end in _label_spans(report)
         ):
             continue
         match_text = match.group(0)

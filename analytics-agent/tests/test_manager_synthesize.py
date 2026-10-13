@@ -531,3 +531,8 @@ def test_iso_date_labels_are_not_extracted() -> None:
 def test_evidence_strings_mask_identifiers() -> None:
     evidence = [_evidence([{"seller": "19484c79abc", "orders": 5}])]
     assert groundedness_violation("Seller 19484c79abc had 5 orders.", evidence) is None
+
+
+def test_month_year_labels_are_not_extracted() -> None:
+    assert extract_report_numbers("September 2018 order activity") == []
+    assert extract_report_numbers("results from Jan 2018 through Dec 2018") == []
