@@ -33,9 +33,11 @@ _SYNTHESIZE_SYSTEM = (
     "management request. Ground every number strictly in the evidence "
     "result rows: copy numbers exactly as they appear — no rounding, no "
     "derived or computed numbers, no invented values, and no percentages "
-    "unless a percentage appears in a result row. Do not use numbered "
-    "lists or any numbering. If the evidence is insufficient for a claim, "
-    "say so instead of filling the gap."
+    "unless a percentage appears in a result row. Do not quote thresholds, "
+    "limits, counts, ratios, or computed values unless that exact value is "
+    "present in a result row or supplied in the management request. Do not "
+    "use numbered lists or any numbering. If the evidence is insufficient "
+    "for a claim, say so instead of filling the gap."
 )
 
 _INSPECT_SYSTEM = (

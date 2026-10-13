@@ -94,14 +94,13 @@ def test_fabricated_number_violates() -> None:
     assert "groundedness violation" in violation
 
 
-def test_calibrated_tolerance_accepts_proportional_rounding() -> None:
-    # 0.5% relative window: "about 250,000" for the real 249,485.85 (the
-    # false positive from the M7.5 manual run) is legitimate prose rounding.
+def test_strict_matching_rejects_proportional_rounding() -> None:
+    # Rounding is not an excuse: 250,000 is 20% away from 249,485.85, so it
+    # is not the reported SQL value. Likewise 10 is not 10.5.
     evidence = [_evidence([{"sales": 249485.85}])]
-    assert groundedness_violation("Sales were about 250,000.", evidence) is None
-    # "~1,002,560" for 1,002,560.03 is 0.25% — still within the window.
-    evidence = [_evidence([{"avg": 1002560.03}])]
-    assert groundedness_violation("Average deviation ~1,002,560.", evidence) is None
+    assert groundedness_violation("Sales were about 250,000.", evidence) is not None
+    evidence = [_evidence([{"share": 10.5}])]
+    assert groundedness_violation("Share of about 10.", evidence) is not None
 
 
 def test_magnitude_fabrication_is_still_rejected() -> None:
@@ -114,11 +113,11 @@ def test_magnitude_fabrication_is_still_rejected() -> None:
     assert groundedness_violation("Revenue was 250,000.", evidence) is not None
 
 
-def test_absolute_floor_accepts_small_rounding() -> None:
-    # The +/-10 absolute floor: prose "about 10" maps to 10.5, but a number
-    # more than 10 away (21.5) is a different claim and still fails.
+def test_strict_matching_accepts_only_float_noise() -> None:
+    # "10" is not 10.5, but floating-point JSON noise (10.5000001) is.
     evidence = [_evidence([{"share": 10.5}])]
-    assert groundedness_violation("Share of about 10.", evidence) is None
+    assert groundedness_violation("Share of 10.", evidence) is not None
+    assert groundedness_violation("Share of 10.5000001.", evidence) is None
     assert groundedness_violation("Share of 21.5.", evidence) is not None
 
 
@@ -133,13 +132,17 @@ def test_task_context_years_are_inputs_not_claims() -> None:
     assert groundedness_violation(report, evidence, task="first half of 2018") is None
 
 
-def test_sub_question_context_is_exempt() -> None:
+def test_sub_question_context_does_not_exempt() -> None:
     record = EvidenceRecord(
         sub_index=0,
         sub_question="Revenue per month for the first half of 2018?",
         rows=[{"revenue": 10.5}],
     )
-    assert groundedness_violation("In 2018 revenue was 10.5.", [record]) is None
+    # 2018 comes only from manager-generated sub-question text, not evidence
+    # or the original request, so it must not ground the report.
+    assert groundedness_violation("In 2018 revenue was 10.5.", [record]) is not None
+    assert "2018" in groundedness_violation("In 2018 revenue was 10.5.", [record])
+    assert groundedness_violation("Revenue was 10.5.", [record]) is None
 
 
 def test_context_does_not_exempt_fabricated_numbers() -> None:
@@ -162,14 +165,12 @@ def test_non_context_year_still_violates() -> None:
 
 def test_context_exemption_keeps_evidence_matching() -> None:
     evidence = [_evidence([{"revenue": 1000.0}])]
-    # 1000.0 is evidence-grounded, 2018 is context-grounded: both pass.
+    # 1000.0 is evidence-grounded, 2018 is request-grounded: both pass, the
+    # former only because 1000.001 is within strict float exactness.
     assert (
         groundedness_violation("In 2018 revenue was 1000.001.", evidence, task="first half of 2018")
         is None
     )
-    # A derived-but-unstated number still fails even with a valid context
-    # year: 1100 is within the task window yet appears in no row (calibrated
-    # tolerance: |1100-1000| > max(0.5% of 1000, 10) = 10).
     assert (
         groundedness_violation("In 2018 revenue was 1100.", evidence, task="first half of 2018")
         is not None
@@ -396,3 +397,94 @@ async def test_all_failed_sub_analyses_skip_synthesis() -> None:
 
     assert state["status"] is ManagerStatus.FAILED
     assert len(llm.report_calls) == 0  # nothing to synthesize from
+
+
+# ---------------------------------------------------------------------------
+# Hardened contract edge cases (strict provenance and matching)
+# ---------------------------------------------------------------------------
+
+
+def test_sql_threshold_without_result_row_fails() -> None:
+    # A number that only appeared as SQL's HAVING threshold is not reported
+    # data, so claiming it must violate groundedness.
+    evidence = [_evidence([{"product_category_name": "a", "total_revenue": 123456.0}])]
+    assert (
+        groundedness_violation(
+            "Categories above 10000 generate the most revenue.",
+            evidence,
+        )
+        is not None
+    )
+
+
+def test_returned_threshold_passes() -> None:
+    evidence = [_evidence([{"threshold": 10000, "total_revenue": 123456.0}])]
+    assert groundedness_violation("The 10000 threshold was used.", evidence) is None
+
+
+def test_derived_ratio_fails() -> None:
+    evidence = [_evidence([{"numerator": 10.0, "denominator": 4.0}])]
+    assert groundedness_violation("The ratio was 2.5.", evidence) is not None
+
+
+def test_exact_quotient_returned_passes() -> None:
+    evidence = [_evidence([{"numerator": 10.0, "denominator": 4.0, "quotient": 2.5}])]
+    assert groundedness_violation("The quotient was 2.5.", evidence) is None
+
+
+def test_percent_from_fraction_fails() -> None:
+    evidence = [_evidence([{"share": 0.125}])]
+    assert groundedness_violation("Share was 12.5%.", evidence) is not None
+
+
+def test_percent_verbatim_passes() -> None:
+    evidence = [_evidence([{"share": 12.5}])]
+    assert groundedness_violation("Share was 12.5%.", evidence) is None
+
+
+def test_strings_timestamps_and_bools_never_ground_numbers() -> None:
+    # Extended from test_strings_and_bools_never_ground_numbers with timestamps
+    # and bool-ish scalar encodings: no cell here grounds any report claim.
+    evidence = [_evidence([{"label": "2023-01-01T00:00:00", "flag": True, "code": "42"}])]
+    violation = groundedness_violation("In 2023 there were 1 cases, code 42.", evidence)
+    assert violation is not None
+
+
+def test_scientific_notation_extracts_and_compares() -> None:
+    evidence = [_evidence([{"value": 1000.0}])]
+    assert groundedness_violation("Value was 1e3.", evidence) is None
+    assert extract_report_numbers("Value was 1E3.") == [1000.0]
+
+
+def test_ambiguous_localization_extracts_components() -> None:
+    # European-style decimals are not silently accepted as one US value:
+    # the digit runs are still extracted so they must separately ground.
+    assert extract_report_numbers("Price 1.234,56") == [1.234, 56.0]
+    assert extract_report_numbers("Value 1,234.56") == [1234.56]
+
+
+def test_task_context_number_does_not_prove_relevance() -> None:
+    evidence = [_evidence([{"revenue": 10.5}])]
+    # The number is accepted as an input, even though the evidence cannot
+    # prove relevance to the claim.
+    assert (
+        groundedness_violation("In 2018 revenue was 10.5.", evidence, task="first half of 2018")
+        is None
+    )
+    # A different ungrounded number still fails despite the context number.
+    assert (
+        groundedness_violation("In 2018 revenue was 999.99.", evidence, task="first half of 2018")
+        is not None
+    )
+
+
+def test_negative_and_signed_values() -> None:
+    evidence = [_evidence([{"delta": -3.5}])]
+    assert groundedness_violation("The change was -3.5.", evidence) is None
+    assert groundedness_violation("The change was 3.5.", evidence) is not None
+
+
+def test_zero_grounding() -> None:
+    evidence = [_evidence([{"value": 0}])]
+    assert groundedness_violation("Value was 0.", evidence) is None
+    assert groundedness_violation("Value was 1.", evidence) is not None
