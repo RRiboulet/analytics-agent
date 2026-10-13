@@ -11,6 +11,7 @@ observability plumbing. The inherited analyst methods (``generate_sql`` /
 ``generate_answer``) are simply not used by the manager.
 """
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -167,5 +168,14 @@ def create_manager_llm() -> ManagerLLMClient:
             base_url=settings.openrouter_base_url,
             model=settings.openrouter_model,
             api_key=settings.openrouter_api_key,
+        )
+    if settings.llm_provider == "opencode":
+        if not settings.opencode_api_key:
+            raise ValueError("OPENCODE_API_KEY is required when LLM_PROVIDER=opencode")
+        return ManagerLLMClient(
+            base_url=settings.opencode_base_url,
+            model=settings.opencode_model,
+            api_key=settings.opencode_api_key,
+            extra_headers={"x-opencode-session": f"session-{uuid.uuid4().hex}"},
         )
     return ManagerLLMClient()

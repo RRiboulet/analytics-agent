@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     # "openrouter" switches to the hosted OpenRouter API, which requires
     # OPENROUTER_API_KEY and uses OPENROUTER_MODEL. Both configurations stay
     # in .env simultaneously; the provider selects which one is active.
-    llm_provider: Literal["llamacpp", "openrouter"] = Field(
+    llm_provider: Literal["llamacpp", "openrouter", "opencode"] = Field(
         default="llamacpp", validation_alias="LLM_PROVIDER"
     )
     # OpenRouter serves an OpenAI-compatible API at this base URL.
@@ -90,6 +90,15 @@ class Settings(BaseSettings):
     # OpenRouter model id (e.g. "openai/gpt-4o-mini",
     # "meta-llama/llama-3.3-70b-instruct").
     openrouter_model: str = Field(default="openai/gpt-4o-mini", validation_alias="OPENROUTER_MODEL")
+    # OpenCode (OpenCode Go) serves an OpenAI-compatible API at this base URL.
+    opencode_base_url: str = Field(
+        default="https://opencode.ai/zen/go/v1", validation_alias="OPENCODE_BASE_URL"
+    )
+    # Secret: read from the environment/.env only; never logged or echoed in
+    # error messages. Required iff llm_provider is "opencode".
+    opencode_api_key: str | None = Field(default=None, validation_alias="OPENCODE_API_KEY")
+    # OpenCode model id (e.g. "kimi-k2.6", "glm-5.3", "deepseek-v4-flash").
+    opencode_model: str = Field(default="kimi-k2.6", validation_alias="OPENCODE_MODEL")
     llm_timeout_seconds: float = Field(default=300.0, validation_alias="LLM_TIMEOUT_SECONDS", gt=0)
     # Cap per-generation output tokens. This matters on servers started with
     # --reasoning on, where the model spends tokens on chain-of-thought before
