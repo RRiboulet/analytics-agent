@@ -488,3 +488,30 @@ def test_zero_grounding() -> None:
     evidence = [_evidence([{"value": 0}])]
     assert groundedness_violation("Value was 0.", evidence) is None
     assert groundedness_violation("Value was 1.", evidence) is not None
+
+
+# ---------------------------------------------------------------------------
+# Residual edge cases surfaced by re-review (strict provenance hardening)
+# ---------------------------------------------------------------------------
+
+
+def test_comma_joined_lists_extract_each_component() -> None:
+    assert extract_report_numbers("profit 1.5,2.5 total") == [1.5, 2.5]
+    assert extract_report_numbers("years 2018,2019 compared") == [2018.0, 2019.0]
+    assert extract_report_numbers("values 12345,67890") == [12345.0, 67890.0]
+    assert extract_report_numbers("values 500,1000") == [500.0, 1000.0]
+    assert extract_report_numbers("values 1,000,2,000") == [1000.0, 2000.0]
+    assert extract_report_numbers("deltas 3,-5 and") == [3.0, -5.0]
+
+
+def test_unicode_minus_and_decimal_strings_do_not_evade() -> None:
+    # U+2212 must not flip the sign.
+    assert extract_report_numbers("change \u22123.5") == [-3.5]
+    # Leading-dot decimals are still extracted so they must ground.
+    assert extract_report_numbers("share .5") == [0.5]
+
+
+def test_infinity_prose_cannot_be_trivially_grounded() -> None:
+    evidence = [_evidence([{"value": 1.0}])]
+    assert extract_report_numbers("value 1e400") == [float("inf")]
+    assert groundedness_violation("value 1e400", evidence) is not None

@@ -42,7 +42,7 @@ from app.manager.evidence import EvidenceRecord
 # leading lookbehind so identifiers such as R2D2 or v1.2.3 are not treated
 # as number sequences, while a sentence-ending "1." still extracts 1.
 _NUMBER = re.compile(
-    r"(?<![\w.])-?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?:[eE][+-]?\d+)?(?!\d)"
+    r"(?<![\w.])[-\u2212]?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?(?!\d)"
 )
 
 # Strict floating-point exactness window. This is only a representation
