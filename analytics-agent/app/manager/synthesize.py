@@ -50,6 +50,21 @@ _NUMBER = re.compile(
 GROUNDEDNESS_RELATIVE_TOLERANCE = 1e-6
 
 
+_ISO_DATE_LABEL = re.compile(r"(?:19|20)\d{2}-\d{1,2}(?:-\d{1,2})?")
+_MONTH_YEAR_LABEL = re.compile(
+    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?)\s+(?:19|20)\d{2}\b",
+    re.IGNORECASE,
+)
+
+
+def _label_spans(text: str) -> list[tuple[int, int]]:
+    spans = [(m.start(), m.end()) for m in _ISO_DATE_LABEL.finditer(text)]
+    spans.extend((m.start(), m.end()) for m in _MONTH_YEAR_LABEL.finditer(text))
+    return spans
+
+
 def extract_report_numbers(report: str) -> list[float]:
     """Extract the numeric values mentioned in a report text.
 
@@ -57,9 +72,18 @@ def extract_report_numbers(report: str) -> list[float]:
     kept: the groundedness check is existential per extracted number.
     """
     values: list[float] = []
-    for match in _NUMBER.findall(report):
-        negative = match[0] in ("-", "\u2212", "\u2013")
-        cleaned = match.lstrip("-\u2212\u2013").replace(",", "")
+    for match in _NUMBER.finditer(report):
+        # Components of an ISO date/month label such as "2018-04" or
+        # "2018-04-07" are labels, not measurements. Skip the candidate only
+        # when it lies inside one of those full label shapes; ordinary ranges
+        # such as "1-3" are left strictly grounded.
+        if any(
+            start <= match.start() and match.end() <= end for start, end in _label_spans(report)
+        ):
+            continue
+        match_text = match.group(0)
+        negative = match_text[0] in ("-", "\u2212", "\u2013")
+        cleaned = match_text.lstrip("-\u2212\u2013").replace(",", "")
         try:
             value = float(cleaned)
         except (TypeError, ValueError, OverflowError):
@@ -85,6 +109,21 @@ def collect_evidence_values(evidence: list[EvidenceRecord]) -> list[float]:
                     continue
                 values.append(numeric)
     return values
+
+
+def _mask_evidence_strings(report: str, evidence: list[EvidenceRecord]) -> str:
+    """Replace evidence string cells with a digit-free placeholder.
+
+    Identifiers and labels must not contribute their digits to the groundedness
+    scan, even when they appear verbatim in a report.
+    """
+    masked = report
+    for record in evidence:
+        for row in record.rows or []:
+            for cell in row.values():
+                if isinstance(cell, str) and cell:
+                    masked = masked.replace(cell, " [value] ")
+    return masked
 
 
 def _number_matches(value: float, number: float) -> bool:
@@ -114,7 +153,7 @@ def groundedness_violation(
     """
     values = collect_evidence_values(evidence)
     values += extract_report_numbers(task)
-    for number in extract_report_numbers(report):
+    for number in extract_report_numbers(_mask_evidence_strings(report, evidence)):
         if not any(_number_matches(value, number) for value in values):
             return (
                 f"Report number {number} does not appear in any evidence result set "
