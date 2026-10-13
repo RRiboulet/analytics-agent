@@ -30,7 +30,9 @@ def _parse_entry(raw: dict, index: int) -> ManagerEvalCase:
     where = f"manager dataset entry #{index}"
     _require(isinstance(raw, dict), f"{where}: expected a mapping")
     case_id = raw.get("id")
-    request = raw.get("request", raw.get("question"))
+    request = raw.get("request")
+    if not isinstance(request, str) or not request.strip():
+        request = raw.get("question")
     difficulty = raw.get("difficulty")
     category = raw.get("category")
     _require(

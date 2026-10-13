@@ -28,6 +28,21 @@ class ManagerCaseResult(CaseResult):
     sub_questions: list[str] = field(default_factory=list)
     follow_up_questions: list[str] = field(default_factory=list)
 
+    def to_record(self):
+        record = super().to_record()
+        record.update(
+            {
+                "decomposition_valid": self.decomposition_valid,
+                "follow_up_valid": self.follow_up_valid,
+                "groundedness_valid": self.groundedness_valid,
+                "completion_valid": self.completion_valid,
+                "sub_analyses_valid": self.sub_analyses_valid,
+                "sub_questions": self.sub_questions,
+                "follow_up_questions": self.follow_up_questions,
+            }
+        )
+        return record
+
 
 def structural_checks(result: ManagerRunResult) -> dict[str, bool]:
     """Compute the structural pass/fail checks for a manager run."""
