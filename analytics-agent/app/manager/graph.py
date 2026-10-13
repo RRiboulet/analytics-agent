@@ -232,6 +232,7 @@ def build_manager_graph(services: ManagerServices) -> Any:
         evidence_text = format_evidence(evidence)
         report = None
         violation = None
+        first_violating_report = None
         # One correction round: a groundedness violation feeds the offending
         # number back to the model so it can rephrase (e.g. drop a structural
         # constant) instead of failing on a deterministic first draft. The
@@ -265,6 +266,8 @@ def build_manager_graph(services: ManagerServices) -> Any:
                     "groundedness_error": None,
                     "llm_error": None,
                 }
+            if first_violating_report is None:
+                first_violating_report = report
         # Never ship a fabricated report: store the last rejected attempt for
         # inspection only.
         return {
@@ -272,7 +275,7 @@ def build_manager_graph(services: ManagerServices) -> Any:
             "status": ManagerStatus.FAILED,
             "groundedness_error": violation,
             "report": None,
-            "report_attempt": report,
+            "report_attempt": first_violating_report or report,
             "llm_error": None,
         }
 

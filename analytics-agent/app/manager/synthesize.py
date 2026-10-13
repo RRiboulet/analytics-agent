@@ -42,12 +42,19 @@ from app.manager.evidence import EvidenceRecord
 # leading lookbehind so identifiers such as R2D2 or v1.2.3 are not treated
 # as number sequences, while a sentence-ending "1." still extracts 1.
 _NUMBER = re.compile(
-    r"(?<![\w.])[-\u2212]?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?(?![\w])"
+    r"(?<![\w.])[-\u2212]?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?(?!\d)"
 )
 
 # Strict floating-point exactness window. This is only a representation
 # tolerance; it is intentionally not a licence to round prose numbers.
 GROUNDEDNESS_RELATIVE_TOLERANCE = 1e-6
+
+
+_ISO_DATE_LABEL = re.compile(r"(?:19|20)\d{2}-\d{1,2}(?:-\d{1,2})?")
+
+
+def _iso_date_spans(text: str) -> list[tuple[int, int]]:
+    return [(m.start(), m.end()) for m in _ISO_DATE_LABEL.finditer(text)]
 
 
 def extract_report_numbers(report: str) -> list[float]:
@@ -58,24 +65,13 @@ def extract_report_numbers(report: str) -> list[float]:
     """
     values: list[float] = []
     for match in _NUMBER.finditer(report):
-        # Numbers that are components of an ISO date label such as
-        # "2018-04" or "2018-04-07" are labels, not measurements: skip
-        # them so a report can copy a period label verbatim. The skip is
-        # restricted to that shape so ordinary ranges ("1-3") or subtraction
-        # are not silently swallowed.
-        iso_at_start = False
-        if match.end() < len(report) and report[match.end()] == "-":
-            rest = report[match.end() + 1 :]
-            # at least one more digit after the hyphen, and an ISO-ish shape
-            if match.group(0).isdigit() and len(match.group(0)) == 4 and rest[:1].isdigit():
-                iso_at_start = True
-        iso_as_component = False
-        if match.start() > 0 and report[match.start() - 1] == "-":
-            # four-digit year must immediately precede the hyphen
-            start = match.start() - 1
-            if start >= 4 and report[start - 4 : start].isdigit():
-                iso_as_component = True
-        if iso_at_start or iso_as_component:
+        # Components of an ISO date/month label such as "2018-04" or
+        # "2018-04-07" are labels, not measurements. Skip the candidate only
+        # when it lies inside one of those full label shapes; ordinary ranges
+        # such as "1-3" are left strictly grounded.
+        if any(
+            start <= match.start() and match.end() <= end for start, end in _iso_date_spans(report)
+        ):
             continue
         match_text = match.group(0)
         negative = match_text[0] in ("-", "\u2212", "\u2013")
@@ -107,6 +103,21 @@ def collect_evidence_values(evidence: list[EvidenceRecord]) -> list[float]:
     return values
 
 
+def _mask_evidence_strings(report: str, evidence: list[EvidenceRecord]) -> str:
+    """Replace evidence string cells with a digit-free placeholder.
+
+    Identifiers and labels must not contribute their digits to the groundedness
+    scan, even when they appear verbatim in a report.
+    """
+    masked = report
+    for record in evidence:
+        for row in record.rows or []:
+            for cell in row.values():
+                if isinstance(cell, str) and cell:
+                    masked = masked.replace(cell, " [value] ")
+    return masked
+
+
 def _number_matches(value: float, number: float) -> bool:
     """True when a report ``number`` can be grounded in one evidence ``value``.
 
@@ -134,7 +145,7 @@ def groundedness_violation(
     """
     values = collect_evidence_values(evidence)
     values += extract_report_numbers(task)
-    for number in extract_report_numbers(report):
+    for number in extract_report_numbers(_mask_evidence_strings(report, evidence)):
         if not any(_number_matches(value, number) for value in values):
             return (
                 f"Report number {number} does not appear in any evidence result set "
