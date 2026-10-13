@@ -515,3 +515,19 @@ def test_infinity_prose_cannot_be_trivially_grounded() -> None:
     evidence = [_evidence([{"value": 1.0}])]
     assert extract_report_numbers("value 1e400") == [float("inf")]
     assert groundedness_violation("value 1e400", evidence) is not None
+
+
+def test_attached_units_do_not_hide_numbers() -> None:
+    assert extract_report_numbers("revenue was 999.99USD") == [999.99]
+    assert extract_report_numbers("about 10k items") == [10.0]
+    assert extract_report_numbers("margin of 12.5% recorded") == [12.5]
+
+
+def test_iso_date_labels_are_not_extracted() -> None:
+    assert extract_report_numbers("period 2018-04 saw growth") == []
+    assert extract_report_numbers("from 2018-04-07 to 2018-05-01") == []
+
+
+def test_evidence_strings_mask_identifiers() -> None:
+    evidence = [_evidence([{"seller": "19484c79abc", "orders": 5}])]
+    assert groundedness_violation("Seller 19484c79abc had 5 orders.", evidence) is None
