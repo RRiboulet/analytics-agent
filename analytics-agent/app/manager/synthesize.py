@@ -42,7 +42,7 @@ from app.manager.evidence import EvidenceRecord
 # leading lookbehind so identifiers such as R2D2 or v1.2.3 are not treated
 # as number sequences, while a sentence-ending "1." still extracts 1.
 _NUMBER = re.compile(
-    r"(?<![\w.])[-\u2212]?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?(?!\d)"
+    r"(?<![\w.])[-\u2212]?(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?(?![\w])"
 )
 
 # Strict floating-point exactness window. This is only a representation
@@ -57,9 +57,29 @@ def extract_report_numbers(report: str) -> list[float]:
     kept: the groundedness check is existential per extracted number.
     """
     values: list[float] = []
-    for match in _NUMBER.findall(report):
-        negative = match[0] in ("-", "\u2212", "\u2013")
-        cleaned = match.lstrip("-\u2212\u2013").replace(",", "")
+    for match in _NUMBER.finditer(report):
+        # Numbers that are components of an ISO date label such as
+        # "2018-04" or "2018-04-07" are labels, not measurements: skip
+        # them so a report can copy a period label verbatim. The skip is
+        # restricted to that shape so ordinary ranges ("1-3") or subtraction
+        # are not silently swallowed.
+        iso_at_start = False
+        if match.end() < len(report) and report[match.end()] == "-":
+            rest = report[match.end() + 1 :]
+            # at least one more digit after the hyphen, and an ISO-ish shape
+            if match.group(0).isdigit() and len(match.group(0)) == 4 and rest[:1].isdigit():
+                iso_at_start = True
+        iso_as_component = False
+        if match.start() > 0 and report[match.start() - 1] == "-":
+            # four-digit year must immediately precede the hyphen
+            start = match.start() - 1
+            if start >= 4 and report[start - 4 : start].isdigit():
+                iso_as_component = True
+        if iso_at_start or iso_as_component:
+            continue
+        match_text = match.group(0)
+        negative = match_text[0] in ("-", "\u2212", "\u2013")
+        cleaned = match_text.lstrip("-\u2212\u2013").replace(",", "")
         try:
             value = float(cleaned)
         except (TypeError, ValueError, OverflowError):

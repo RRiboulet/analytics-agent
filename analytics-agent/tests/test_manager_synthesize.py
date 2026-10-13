@@ -327,7 +327,7 @@ async def test_fabricated_report_fails_without_storing_it() -> None:
     # would be impossible to debug (this is the M7.5 250,000 case).
     assert state["report_attempt"] == "Revenue was 999.99."
     assert "999.99" in state["groundedness_error"]
-    assert len(llm.report_calls) == 1  # deterministic violation: no retry
+    assert len(llm.report_calls) == 2  # one correction attempt before failing
 
 
 async def test_grounded_report_does_not_set_report_attempt() -> None:

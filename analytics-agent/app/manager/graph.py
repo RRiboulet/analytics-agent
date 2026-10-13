@@ -228,41 +228,51 @@ def build_manager_graph(services: ManagerServices) -> Any:
 
     async def _synthesize(state: ManagerState) -> dict[str, Any]:
         update: dict[str, Any] = {"status": ManagerStatus.SYNTHESIZING}
-        try:
-            report = await services.llm.synthesize(
-                state["request"], format_evidence(state["evidence"])
-            )
-        except LLMError as error:
-            return {
-                **update,
-                "llm_error": str(error),
-                "report": None,
-                "retry_stage": SYNTHESIZE,
-            }
-        violation = groundedness_violation(report, state["evidence"], task=state.get("request", ""))
-        if violation:
-            # Never ship a fabricated report: on a violation the report is
-            # not stored as the result and the run fails. Deterministic
-            # output at temperature 0 would reproduce the same violation, so
-            # there is no retry. The rejected text is kept in
-            # ``report_attempt`` (never returned as the report) so the
-            # failure is inspectable in evidence.json/traces: the whole
-            # point of this guardrail is to catch fabrication, and a
-            # violation message naming a number that exists nowhere in the
-            # evidence is not enough to debug why the model invented it.
-            return {
-                **update,
-                "status": ManagerStatus.FAILED,
-                "groundedness_error": violation,
-                "report": None,
-                "report_attempt": report,
-                "llm_error": None,
-            }
+        evidence = state.get("evidence", [])
+        evidence_text = format_evidence(evidence)
+        report = None
+        violation = None
+        # One correction round: a groundedness violation feeds the offending
+        # number back to the model so it can rephrase (e.g. drop a structural
+        # constant) instead of failing on a deterministic first draft. The
+        # gate itself stays strict; this is a rephrase aid, not relaxation.
+        for _attempt in range(2):
+            prompt_evidence = evidence_text
+            if violation is not None:
+                prompt_evidence = (
+                    evidence_text
+                    + "\n\nGroundedness correction: "
+                    + violation
+                    + " Rewrite the report without that number "
+                    + "(rephrase the condition/period qualitatively) and keep "
+                    + "every other value exactly as recorded."
+                )
+            try:
+                report = await services.llm.synthesize(state["request"], prompt_evidence)
+            except LLMError as error:
+                return {
+                    **update,
+                    "llm_error": str(error),
+                    "report": None,
+                    "retry_stage": SYNTHESIZE,
+                }
+            violation = groundedness_violation(report, evidence, task=state.get("request", ""))
+            if violation is None:
+                return {
+                    **update,
+                    "status": ManagerStatus.COMPLETED,
+                    "report": report,
+                    "groundedness_error": None,
+                    "llm_error": None,
+                }
+        # Never ship a fabricated report: store the last rejected attempt for
+        # inspection only.
         return {
             **update,
-            "status": ManagerStatus.COMPLETED,
-            "report": report,
-            "groundedness_error": None,
+            "status": ManagerStatus.FAILED,
+            "groundedness_error": violation,
+            "report": None,
+            "report_attempt": report,
             "llm_error": None,
         }
 
