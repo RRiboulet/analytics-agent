@@ -31,7 +31,7 @@ The project is developed inside a VSCode Dev Container providing Python 3.13, `u
 
 ## Pi agent extensions
 
-The pi extensions and skills come from the shared, versioned package declared in `.pi/settings.json` (`git:github.com/RRiboulet/my-agent-setup@v1.4.0`), not from a vendored copy. Because it is a project package, pi installs and loads it only after project trust is granted: pi asks once, and the answer is stored on the persistent pi-config volume, so container rebuilds keep it and only a fresh volume re-asks. A non-interactive first run (`pi -p`) in an untrusted project loads no project extensions, so grant trust interactively once (or pass `--approve`).
+The pi extensions and skills come from the shared, versioned package declared in `.pi/settings.json` (`git:github.com/RRiboulet/my-agent-setup@v1.5.0`), not from a vendored copy. Because it is a project package, pi installs and loads it only after project trust is granted: pi asks once, and the answer is stored on the persistent pi-config volume, so container rebuilds keep it and only a fresh volume re-asks. A non-interactive first run (`pi -p`) in an untrusted project loads no project extensions, so grant trust interactively once (or pass `--approve`).
 
 The package's `subagent` extension lets the main agent delegate isolated tasks to child pi processes that run in detached `tmux` sessions:
 
