@@ -23,7 +23,9 @@ This is a local demonstration. Authentication, Azure deployment, and write opera
 
 ## Prerequisites
 
-Install Docker, Docker Compose, Python 3.13+, and `uv`.
+Inside the devcontainer everything below is already provided; PostgreSQL runs as a service of `.devcontainer/docker-compose.yml` and is reachable at `postgres:5432` (`DATABASE_URL`/`ADMIN_DATABASE_URL` are set by `containerEnv`). The container has no Docker daemon.
+
+For a run on a bare host instead: Docker, Docker Compose, Python 3.13+ and `uv`.
 
 ## Run locally
 
@@ -33,7 +35,11 @@ Install Docker, Docker Compose, Python 3.13+, and `uv`.
 	cp .env.example .env
 	```
 
-2. Start PostgreSQL:
+2. Start PostgreSQL.
+
+	Inside the devcontainer there is nothing to do: `devcontainer up` starts the
+	`postgres` service of `.devcontainer/docker-compose.yml` and `postCreate` waits
+	for its TCP listener. On a bare host, use the project file:
 
 	```bash
 	docker compose up -d postgres
@@ -166,7 +172,7 @@ These steps assume PostgreSQL and the MCP server are already running (see [Run l
 	curl -s http://localhost:8000/ready
 	```
 
-	Expect `{"status": "ready"}`. A `503` with `{"status": "not_ready"}` means PostgreSQL is not reachable — check `docker compose ps`.
+	Expect `{"status": "ready"}`. A `503` with `{"status": "not_ready"}` means PostgreSQL is not reachable — inside the devcontainer check `docker compose -f .devcontainer/docker-compose.yml ps` on the host, on a bare host `docker compose ps`.
 
 3. Install Node.js if `npx` is not already available:
 
@@ -239,6 +245,11 @@ uv run ruff check .
 The unit tests cover SQL validation and the MCP tool response contract without requiring a live database. For a clean database, remove the named volume and initialize it again:
 
 ```bash
+# devcontainer: the data volume belongs to the devcontainer stack
+docker compose -f .devcontainer/docker-compose.yml down -v
+docker compose -f .devcontainer/docker-compose.yml up -d postgres
+
+# bare host
 docker compose down -v
 docker compose up -d postgres
 ```

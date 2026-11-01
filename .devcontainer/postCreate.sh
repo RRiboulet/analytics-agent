@@ -71,26 +71,24 @@ fi
 cd analytics-agent
 uv sync 2>&1 | tail -5
 
-docker compose -f docker-compose.yml up -d postgres
-
-# Wait for Postgres to accept connections before reporting ready. `pg_isready`
-# is the real readiness probe; the previous `curl http://localhost:5432/` spoke
-# HTTP at a Postgres socket and could never succeed.
+# PostgreSQL is a service of the devcontainer's own compose stack (see
+# .devcontainer/docker-compose.yml) and is started by `devcontainer up`; there is
+# no Docker daemon in this container to start it with.
 #
-# `-h localhost` matters: without it `pg_isready` probes the Unix socket, which
-# the docker-entrypoint "temp server" also accepts while it loads the Olist
-# CSVs, so the loop could break before the real server is up. The temp server
-# has no TCP listener, so a TCP probe only succeeds once init has finished.
+# Wait for its TCP listener. The entrypoint's temporary init server during the
+# Olist load answers on the Unix socket only (`listen_addresses` is empty), so a
+# successful TCP connect is the first moment the real server is up — the same
+# reasoning the previous `pg_isready -h localhost` probe documented.
 PG_READY=
-for _ in $(seq 1 30); do
-  if docker compose -f docker-compose.yml exec -T postgres pg_isready -h localhost -U olist_admin -d olist >/dev/null 2>&1; then
+for _ in $(seq 1 60); do
+  if bash -c 'exec 3<>/dev/tcp/postgres/5432' 2>/dev/null; then
     PG_READY=1
     break
   fi
   sleep 2
 done
 if [ -z "$PG_READY" ]; then
-  echo 'postCreate: postgres not ready after 60s; check `docker compose logs postgres`' >&2
+  echo 'postCreate: postgres not reachable at postgres:5432 after 120s; on the host run `docker compose -f .devcontainer/docker-compose.yml logs postgres`' >&2
 fi
 echo
-echo 'Analytics Agent ready: MCP on http://localhost:8000/mcp, Postgres on localhost:5432'
+echo 'Analytics Agent ready: MCP on http://localhost:8000/mcp, Postgres on the compose network as postgres:5432'
