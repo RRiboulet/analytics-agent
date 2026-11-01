@@ -10,6 +10,46 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     user: vscode
+    # The MCP server binds 0.0.0.0:8000 inside the container. Publishing it on
+    # the host's loopback is what makes it reachable headlessly: devcontainer.json's
+    # `forwardPorts` is a VS Code client feature and the CLI ignores it. Never
+    # change the left-hand address to 0.0.0.0 — this VM's SSH is the only port
+    # that should be open.
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  # PostgreSQL is a service of *this* stack rather than of the project's own
+  # docker-compose.yml. The container no longer runs a Docker daemon (no
+  # docker-in-docker, no socket mount), so nothing inside it can start the
+  # project stack; compose here is the one that runs. The project file stays
+  # valid for running the stack on a bare host — see analytics-agent/README.md.
+  #
+  # The mount paths are relative to this file, so `../analytics-agent/...` is
+  # the project home. The volume is explicitly named: without it Compose derives
+  # the name from the project directory, and renaming or moving the repo would
+  # point at an empty volume and look like the Olist data had vanished.
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: olist
+      POSTGRES_USER: olist_admin
+      POSTGRES_PASSWORD: olist_admin
+    volumes:
+      - analytics-postgres:/var/lib/postgresql/data
+      - ../analytics-agent/db/init:/docker-entrypoint-initdb.d:ro
+      - ../analytics-agent/data/olist:/olist-data:ro
+    # The Olist load runs during first initialization, so the probe has to allow
+    # for it: the entrypoint's temporary server answers on the Unix socket only,
+    # and `pg_isready` without `-h` would report ready while the load is still
+    # running. `-h localhost` forces the TCP listener, which starts afterwards.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h localhost -U olist_admin -d olist"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
 
 volumes:
   pi-config:
+  analytics-postgres:
+    name: analytics-postgres

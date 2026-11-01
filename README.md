@@ -27,7 +27,7 @@ The long-term goal is an **Autonomous Analytics Manager**; see [`PLAN.md`](PLAN.
 
 ## Development environment
 
-The project is developed inside a VSCode Dev Container providing Python 3.13, `uv`, Node.js, the `pi` coding agent, tmux, Docker-in-Docker, and PostgreSQL via Docker Compose. Open the repo in VSCode and select **Dev Containers: Reopen in Container...**.
+The project is developed inside a VSCode Dev Container providing Python 3.13, `uv`, Node.js, the `pi` coding agent, tmux, and PostgreSQL as a service of the devcontainer's own compose stack (`postgres:5432`, data on the explicitly named `analytics-postgres` volume). There is no Docker daemon inside the container. Open the repo in VSCode and select **Dev Containers: Reopen in Container...**, or on a headless host use `devc analytics-agent` from `my-agent-setup`.
 
 ## Pi agent extensions
 

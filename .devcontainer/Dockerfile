@@ -16,18 +16,14 @@ RUN npm cache clean --force \
     && npm install -g --no-audit --no-fund "@earendil-works/pi-coding-agent@${PI_AGENT_VERSION}" \
     && pi --version
 
-# Docker-in-Docker + tooling needed by the Factory Data MCP demo
-# (MCP server on :8000, PostgreSQL on :5432 via the project's docker-compose).
-# Docker itself (daemon, CLI, compose plugin) comes from the docker-in-docker
-# devcontainer feature; installing Debian's `docker.io` here as well is
-# redundant and risks version skew with the feature's docker-ce.
+# Tooling for the project: the MCP server on :8000 runs here, and PostgreSQL is a
+# service of .devcontainer/docker-compose.yml, so nothing in this image talks to
+# a Docker daemon (the docker-in-docker feature is gone along with the dbus,
+# init and slirp4netns packages it needed).
 # API testing: `http :8000/health` or `http POST :8000/api/foo name=test`
 RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     && apt-get install -y \
-        dbus \
-        init \
         procps \
-        slirp4netns \
         curl \
         httpie \
         jq \

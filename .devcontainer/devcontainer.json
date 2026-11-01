@@ -45,11 +45,18 @@
             }
         }
     },
-    "forwardPorts": [8000, 5432],
+    "forwardPorts": [8000],
     "postCreateCommand": "bash .devcontainer/postCreate.sh",
+    // PostgreSQL is the postgres service of docker-compose.yml. These
+    // override the localhost URLs in .env, which are the host-run truth:
+    // inside the container `localhost` is the container itself. Real
+    // environment variables win over the file in pydantic-settings.
+    "containerEnv": {
+        "DATABASE_URL": "postgresql://olist_readonly:olist_readonly@postgres:5432/olist",
+        "ADMIN_DATABASE_URL": "postgresql://olist_admin:olist_admin@postgres:5432/olist"
+    },
     "remoteUser": "vscode",
     "features": {
-        "ghcr.io/devcontainers/features/docker-in-docker:2": {},
         "ghcr.io/devcontainers/features/git:1": {},
         "ghcr.io/devcontainers/features/github-cli:1": {},
         "ghcr.io/devcontainers/features/common-utils:2": {

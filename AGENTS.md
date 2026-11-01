@@ -19,13 +19,17 @@ The container provides:
 * `uv` for Python dependency management
 * Node.js LTS
 * the `pi` coding agent
-* Docker-in-Docker
-* Docker Compose
 * git
 * ruff
 * pytest
 
-On container startup, the project environment is prepared and the PostgreSQL service is started.
+There is **no Docker daemon inside the container**. PostgreSQL runs as a service
+of `.devcontainer/docker-compose.yml` (image `pgvector/pgvector:pg16`, data on the
+explicitly named `analytics-postgres` volume), so `devcontainer up` starts it and
+the app reaches it at `postgres:5432` — `containerEnv` sets `DATABASE_URL` and
+`ADMIN_DATABASE_URL` to that host, overriding the `localhost` values in `.env`,
+which remain correct for a host run. On container startup the project environment
+is prepared and the server waits for PostgreSQL's TCP listener.
 
 The pi extensions and skills are not vendored here. They come from the shared package declared in `.pi/settings.json` (`git:github.com/RRiboulet/my-agent-setup@v1.5.0`). Because project packages require project trust, pi installs and loads them only after trust is granted.
 
@@ -35,7 +39,7 @@ Coordination and planning docs (`AGENTS.md`, `PLAN.md`) live at the repo root `/
 
 The project code lives in `analytics-agent/` — the **permanent project home**.
 
-Run `uv`, `uvx`, pytest, ruff, and Docker Compose commands from `analytics-agent/`. Relative paths such as `app/`, `db/`, and `tests/` in this file and in `PLAN.md` are relative to that directory.
+Run `uv`, `uvx`, pytest and ruff from `analytics-agent/`. Relative paths such as `app/`, `db/`, and `tests/` in this file and in `PLAN.md` are relative to that directory.
 
 ## Project Context
 
@@ -96,7 +100,7 @@ For ordinary implementation details with a reasonable conventional solution, mak
 The current project contains:
 
 * a Python MCP server
-* PostgreSQL running through Docker Compose
+* PostgreSQL running as a compose service (`postgres:5432`)
 * MCP tools for database interaction
 * a SQL safety layer enforcing read-only access
 * tests covering the existing MCP functionality
