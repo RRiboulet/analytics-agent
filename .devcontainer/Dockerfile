@@ -11,7 +11,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
 # Pin the coding agent: the shared my-agent-setup package is built and
 # tested against pi 1.1.0, so a floating install can break its extensions
 # on a rebuild. Bump this and the .pi/settings.json package pin together.
-ARG PI_AGENT_VERSION=1.1.0
+ARG PI_AGENT_VERSION=1.5.0
 RUN npm cache clean --force \
     && npm install -g --no-audit --no-fund "@earendil-works/pi-coding-agent@${PI_AGENT_VERSION}" \
     && pi --version
