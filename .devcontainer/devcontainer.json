@@ -53,7 +53,9 @@
     // environment variables win over the file in pydantic-settings.
     "containerEnv": {
         "DATABASE_URL": "postgresql://olist_readonly:olist_readonly@postgres:5432/olist",
-        "ADMIN_DATABASE_URL": "postgresql://olist_admin:olist_admin@postgres:5432/olist"
+        "ADMIN_DATABASE_URL": "postgresql://olist_admin:olist_admin@postgres:5432/olist",
+        "PI_TRUE_COLOR": "1",
+        "COLORTERM": "truecolor"
     },
     "remoteUser": "vscode",
     "features": {
