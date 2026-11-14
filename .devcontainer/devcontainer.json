@@ -55,7 +55,15 @@
         "DATABASE_URL": "postgresql://olist_readonly:olist_readonly@postgres:5432/olist",
         "ADMIN_DATABASE_URL": "postgresql://olist_admin:olist_admin@postgres:5432/olist",
         "PI_TRUE_COLOR": "1",
-        "COLORTERM": "truecolor"
+        "COLORTERM": "truecolor",
+        // Credentials arrive per container from the host environment; no
+        // container shares an auth volume. `devc` sources
+        // ~/.config/devc/env before `devcontainer up` when that file exists.
+        "OPENCODE_API_KEY": "${localEnv:OPENCODE_API_KEY}",
+        "OPENROUTER_API_KEY": "${localEnv:OPENROUTER_API_KEY}",
+        "BRAVE_API_KEY": "${localEnv:BRAVE_API_KEY}",
+        "TYPESAFE_API_KEY": "${localEnv:TYPESAFE_API_KEY}",
+        "GH_TOKEN": "${localEnv:GH_TOKEN}"
     },
     "remoteUser": "vscode",
     "features": {

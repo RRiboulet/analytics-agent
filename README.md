@@ -31,7 +31,9 @@ The project is developed inside a VSCode Dev Container providing Python 3.13, `u
 
 ## Pi agent extensions
 
-The pi extensions and skills come from the shared, versioned package declared in `.pi/settings.json` (`git:github.com/RRiboulet/my-agent-setup@v1.10.0`), not from a vendored copy. Because it is a project package, pi installs and loads it only after project trust is granted: pi asks once, and the answer is stored on the persistent pi-config volume, so container rebuilds keep it and only a fresh volume re-asks. A non-interactive first run (`pi -p`) in an untrusted project loads no project extensions, so grant trust interactively once (or pass `--approve`).
+The pi extensions and skills come from [RRiboulet/my-agent-setup](https://github.com/RRiboulet/my-agent-setup), not from a vendored copy. The image clones the tag recorded in `.devcontainer/pi-agent-setup.version` to `/opt/pi-packages/my-agent-setup`, outside the persistent agent dir, and `postCreate.sh` points the container's own settings at that path. The pin is deliberately `v1.12.0`, one release behind that repository's `dev`, so a bump is a conscious step; its CI check and `postCreate` both fail if the recorded pin, the Dockerfile and the running image drift apart.
+
+The container does not share a pi volume or credentials with any other project. Provider keys and `GH_TOKEN` arrive from the host environment (`devc` sources `~/.config/devc/env`), and sessions, trust and gh config stay on this project's private `pi-config` volume.
 
 The package's `subagent` extension lets the main agent delegate isolated tasks to child pi processes that run in detached `tmux` sessions:
 

@@ -31,7 +31,18 @@ the app reaches it at `postgres:5432` — `containerEnv` sets `DATABASE_URL` and
 which remain correct for a host run. On container startup the project environment
 is prepared and the server waits for PostgreSQL's TCP listener.
 
-The pi extensions and skills are not vendored here. They come from the shared package declared in `.pi/settings.json` (`git:github.com/RRiboulet/my-agent-setup@v1.10.0`). Because project packages require project trust, pi installs and loads them only after trust is granted.
+The pi extensions and skills are not vendored here. The image bakes
+[RRiboulet/my-agent-setup](https://github.com/RRiboulet/my-agent-setup) at the tag
+in `.devcontainer/pi-agent-setup.version` under `/opt/pi-packages/my-agent-setup`,
+and `postCreate.sh` declares that baked path in the container's own agent
+settings. No other container shares the volume, the package, or any credential
+with this one.
+
+To bump the package: change `.devcontainer/pi-agent-setup.version`, change the
+`ARG PI_AGENT_SETUP_TAG=` line in the Dockerfile to the same tag, run
+`sh .devcontainer/check-pi-agent-setup.sh`, then `devc rebuild analytics-agent`.
+The build and `postCreate` both fail if the two disagree, and `postCreate`
+also fails if the running image carries a different tag than the checkout pins.
 
 ## Working Directory
 
