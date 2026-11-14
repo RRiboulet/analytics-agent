@@ -50,6 +50,10 @@ services:
       start_period: 30s
 
 volumes:
+  # Private to this project: no other container mounts it. The explicit name is
+  # the one Compose already derived, kept so the existing volume (and its
+  # sessions) is reused rather than silently replaced by an empty one.
   pi-config:
+    name: analytics-agent_devcontainer_pi-config
   analytics-postgres:
     name: analytics-postgres

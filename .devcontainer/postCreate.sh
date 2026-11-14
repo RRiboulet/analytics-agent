@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO=/workspace
+AGENT_DIR=/home/vscode/.pi/agent
+
+# The private volume's mount point can arrive root-owned on a first run, and a
+# bind mount can arrive owned by a host uid that does not match vscode. Repair
+# both before anything below writes into them; with `set -e`, a failed write
+# would abort the rest of postCreate (git identity, clipboard, project setup).
+sudo chown -R vscode:vscode /home/vscode/.pi "$REPO"
+
 # --- zsh + Powerlevel10k ---
 # The common-utils feature creates ~/.zshrc before postCreate runs.
 touch ~/.zshrc
@@ -47,9 +56,53 @@ else
   cp /workspace/.devcontainer/pi/models.json "$MODELS"
 fi
 
-# --- permissions ---
-sudo chown -R vscode:vscode /home/vscode/.pi
-sudo chown -R vscode:vscode /workspace
+# --- pi package from the image (pinned) ---
+# The image clones RRiboulet/my-agent-setup at the tag in
+# .devcontainer/pi-agent-setup.version and labels it. This container only
+# declares that baked copy in its own agent settings; it never fetches the
+# package. A stale image (repo pin bumped, image not rebuilt) fails here rather
+# than silently loading the previous release.
+PI_PACKAGE=/opt/pi-packages/my-agent-setup
+PI_PACKAGE_TAG_FILE="$PI_PACKAGE/.pi-agent-setup-tag"
+EXPECTED_TAG="$(tr -d '[:space:]' < "$REPO/.devcontainer/pi-agent-setup.version")"
+if [ ! -d "$PI_PACKAGE" ] || [ ! -f "$PI_PACKAGE_TAG_FILE" ]; then
+  echo "postCreate: missing baked pi package at $PI_PACKAGE; rebuild the image" >&2
+  exit 1
+fi
+ACTUAL_TAG="$(tr -d '[:space:]' < "$PI_PACKAGE_TAG_FILE")"
+if [ "$ACTUAL_TAG" != "$EXPECTED_TAG" ]; then
+  echo "postCreate: image carries $ACTUAL_TAG but this checkout pins $EXPECTED_TAG; rebuild the image (devc rebuild analytics-agent)" >&2
+  exit 1
+fi
+
+# User-level declaration, absolute so the path does not depend on where the
+# agent dir lives. Remove any older git clone entry first: two entries would
+# load the same extensions twice, and pi exits on the duplicate tools.
+SETTINGS="$AGENT_DIR/settings.json"
+touch "$SETTINGS"
+if command -v jq >/dev/null 2>&1; then
+  jq --arg pkg "$PI_PACKAGE" '
+    .packages = (((.packages // [])
+      | map(select((if type == "object" then (.source // "") else . end) | tostring | test("my-agent-setup") | not))) + [$pkg])
+  ' "$SETTINGS" > "$SETTINGS.tmp" && [ -s "$SETTINGS.tmp" ] \
+    && mv "$SETTINGS.tmp" "$SETTINGS" \
+    || { rm -f "$SETTINGS.tmp"; echo "postCreate: could not record $PI_PACKAGE in $SETTINGS" >&2; exit 1; }
+else
+  echo "postCreate: jq is required to declare the baked pi package" >&2
+  exit 1
+fi
+
+# Project trust makes /workspace/.pi/settings.json (codemode, tool defaults)
+# effective. Merge, never replace: an older volume may trust another path.
+TRUST="$AGENT_DIR/trust.json"
+if [ -f "$TRUST" ] && ! jq -e . "$TRUST" >/dev/null 2>&1; then
+  rm -f "$TRUST"
+fi
+if [ -f "$TRUST" ]; then
+  jq --arg repo "$REPO" '. + {($repo): true}' "$TRUST" > "$TRUST.tmp" && mv "$TRUST.tmp" "$TRUST"
+else
+  jq -n --arg repo "$REPO" '{($repo): true}' > "$TRUST.tmp" && mv "$TRUST.tmp" "$TRUST"
+fi
 
 # --- clipboard ---
 # The host injects WAYLAND_DISPLAY and DISPLAY into the container, but neither
