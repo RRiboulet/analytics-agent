@@ -1212,6 +1212,7 @@ Completed:
   * M8.9 — Measurements recorded above, D009 amended, READMEs updated.
   * Two adversarial review rounds folded in (see the M8 section).
 * [x] **Live validation with a hosted reasoning model** (closes the manual steps M4/M6/M7 left open) — `LLM_PROVIDER=opencode`, `OPENCODE_MODEL=deepseek-v4.1-flash`, `LLM_REASONING_EFFORT=high`: all 30 analyst cases executed, 24 passed (80%; easy 10/10, medium 10/12, hard 4/8), 0 retries, ~10 s/case, all 6 failures genuine result-set mismatches (no harness errors); one management request completed end-to-end with a grounded report and a single bounded follow-up round (~13 min). Langfuse export remains unverified (keys unset, tracer fail-open).
+  Follow-up measured with the token caps raised to 32768/16384 (`LLM_REASONING_EFFORT=high`): analyst benchmark 23/30, **0 truncation failures** (the old 512-token answer cap had killed two hard cases outright; one answer step legitimately generated 10550 tokens), 0 retries, 11 s/case. Remaining failures are query-semantics and type-strictness mismatches (`ELSE 0` vs `NULL`, `DISTINCT` key, month string vs date, column count), not limits. The M7.6 manager benchmark then ran **6/6 passed**, 0 retries, avg 398 s/scenario: every scenario produced a structurally valid decomposition (3-4 sub-questions), 0 sub-analysis errors, 0 follow-up errors, and a grounded report (5 of 6 also triggered the bounded follow-up round, e.g. re-checking the Sep-Oct 2018 data cut-off before concluding a decline).
 
 Next:
 
