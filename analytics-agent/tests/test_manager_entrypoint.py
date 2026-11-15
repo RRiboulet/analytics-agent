@@ -584,3 +584,26 @@ def test_create_manager_llm_openrouter_requires_api_key(monkeypatch, _reset_sett
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
     with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
         create_manager_llm()
+
+
+def test_create_manager_llm_opencode_selection(monkeypatch, _reset_settings_cache) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "opencode")
+    monkeypatch.setenv("OPENCODE_API_KEY", "oc-test")
+    monkeypatch.setenv("OPENCODE_MODEL", "deepseek-v4.1-flash")
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "high")
+    get_settings.cache_clear()
+    client = create_manager_llm()
+    assert client.model == "deepseek-v4.1-flash"
+    assert client.api_key == "oc-test"
+    assert client.base_url.endswith("opencode.ai/zen/go/v1")
+    # The shared client must carry the thinking level into every manager call
+    # (decompose/synthesize/inspect) as well as the analyst sub-runs.
+    assert client.reasoning_effort == "high"
+    assert "x-opencode-session" in client._headers
+
+
+def test_create_manager_llm_opencode_requires_api_key(monkeypatch, _reset_settings_cache) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "opencode")
+    monkeypatch.setenv("OPENCODE_API_KEY", "")
+    with pytest.raises(ValueError, match="OPENCODE_API_KEY"):
+        create_manager_llm()
