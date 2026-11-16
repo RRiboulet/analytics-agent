@@ -111,7 +111,7 @@ async def run_manager_case(
         passed=passed,
         attempts=result.attempts,
         latency_seconds=latency,
-        tool_calls={},
+        tool_calls=dict(result.tool_calls),
         agent_sql=None,
         comparison_detail="; ".join(f"{k}={v}" for k, v in checks.items()),
         failure_reason=_failure_reason(result, checks),

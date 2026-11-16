@@ -38,6 +38,7 @@ def _record(result):
         "passed": result.passed,
         "attempts": result.attempts,
         "latency_seconds": result.latency_seconds,
+        "tool_calls": result.tool_calls,
         "failure_reason": result.failure_reason,
         "comparison_detail": result.comparison_detail,
         "sub_questions": result.sub_questions,
@@ -71,9 +72,11 @@ async def _main(argv=None):
     out_dir = Path(args.out)
     runner = ManagerEvaluationRunner(out_dir=str(out_dir / "artifacts"))
     records = []
+
     def on_result(result):
         records.append(result)
         _record_writer(out_dir, aggregate(records), records)
+
     results = await runner.run_all(cases, on_result=on_result)
     summary = aggregate(results)
     _record_writer(out_dir, summary, results)

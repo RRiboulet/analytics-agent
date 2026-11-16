@@ -38,7 +38,7 @@ import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from langgraph.graph import END, START, StateGraph
 
@@ -79,6 +79,22 @@ def _table_names_from_seed() -> list[str]:
     return list(seed["tables"])
 
 
+class ToolCallCounter(Protocol):
+    """Counting contract the manager expects from the MCP capability wrapper.
+
+    Satisfied structurally by ``CountingCapabilities``, so the manager never
+    imports the evaluation package (and the counter stays a plain decorator).
+    """
+
+    def snapshot(self) -> dict[str, int]:
+        """Return a copy of the per-tool counts right now."""
+        ...
+
+    def delta(self, snapshot: dict[str, int]) -> dict[str, int]:
+        """Return the per-tool calls made since ``snapshot``."""
+        ...
+
+
 @dataclass
 class ManagerServices:
     """Runtime dependencies injected into the manager graph."""
@@ -90,6 +106,10 @@ class ManagerServices:
     # Bounded retries for transient LLM failures; the budget is shared by
     # the retryable stages (decompose / inspect / synthesize).
     max_attempts: int = 2
+    # Optional MCP call counter: each analyst run's cost is attributed to the
+    # evidence record it produced. Absent by default, so the graph — and every
+    # caller that does not care about cost — behaves exactly as before.
+    tool_call_counter: ToolCallCounter | None = None
     # Table-name schema hint; defaults to the curated metadata seed.
     table_names: list[str] = field(default_factory=_table_names_from_seed)
 
@@ -125,14 +145,31 @@ def build_manager_graph(services: ManagerServices) -> Any:
             "decomposition_error": None,
         }
 
+    async def _analyse(question: str) -> tuple[AgentState, dict[str, int]]:
+        """Run one analyst sub-analysis, attributing its MCP calls.
+
+        The counter is snapshotted around the run, so the record gets exactly
+        the calls that run spent — including calls from any retry inside it.
+        Without a counter (a library caller that does not care about cost) the
+        attribution is simply empty.
+        """
+        counter = services.tool_call_counter
+        if counter is None:
+            return await services.run_analyst(question), {}
+        before = counter.snapshot()
+        sub_state = await services.run_analyst(question)
+        return sub_state, counter.delta(before)
+
     async def _run_sub_analyses(state: ManagerState) -> dict[str, Any]:
         evidence: list[EvidenceRecord] = []
         errors: list[str] = []
         # Sequential by D009 (the model server is the bottleneck; parallelism
         # is a pure optimization that can be added without state changes).
         for index, question in enumerate(state["sub_questions"]):
-            sub_state = await services.run_analyst(question)
-            record = EvidenceRecord.from_agent_state(index, question, sub_state)
+            sub_state, tool_calls = await _analyse(question)
+            record = EvidenceRecord.from_agent_state(
+                index, question, sub_state, tool_calls=tool_calls
+            )
             evidence.append(record)
             if record.error:
                 errors.append(f"sub-question {index} ({question}): {record.error}")
@@ -206,9 +243,13 @@ def build_manager_graph(services: ManagerServices) -> Any:
         errors: list[str] = []
         start_index = len(evidence)
         for offset, question in enumerate(questions):
-            sub_state = await services.run_analyst(question)
+            sub_state, tool_calls = await _analyse(question)
             record = EvidenceRecord.from_agent_state(
-                start_index + offset, question, sub_state, is_follow_up=True
+                start_index + offset,
+                question,
+                sub_state,
+                is_follow_up=True,
+                tool_calls=tool_calls,
             )
             evidence.append(record)
             if record.error:
