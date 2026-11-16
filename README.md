@@ -31,7 +31,9 @@ The project is developed inside a VSCode Dev Container providing Python 3.13, `u
 
 ## Pi agent extensions
 
-The pi extensions and skills come from [RRiboulet/my-agent-setup](https://github.com/RRiboulet/my-agent-setup), not from a vendored copy. The image clones the tag recorded in `.devcontainer/pi-agent-setup.version` to `/opt/pi-packages/my-agent-setup`, outside the persistent agent dir, and `postCreate.sh` points the container's own settings at that path. The pin is deliberately `v1.12.0`, one release behind that repository's `dev`, so a bump is a conscious step; its CI check and `postCreate` both fail if the recorded pin, the Dockerfile and the running image drift apart.
+The pi extensions and skills come from [RRiboulet/my-agent-setup](https://github.com/RRiboulet/my-agent-setup), not from a vendored copy. The image clones the tag recorded in `.devcontainer/pi-agent-setup.version` to `/opt/pi-packages/my-agent-setup`, outside the persistent agent dir, and `postCreate.sh` points the container's own settings at that path. The pin is recorded once in `.devcontainer/pi-agent-setup.version` and names a released tag, so a bump is a conscious step; its CI check and `postCreate` both fail if the recorded pin, the Dockerfile and the running image drift apart.
+
+The review-triage policy comes from `.devcontainer/pi/review-triage.json` and is seeded into the container's agent dir only when that dir has no `review-triage.json` yet, so a fresh volume or another host gets the same judge and reviewers while an edit made inside a running container survives a rebuild.
 
 The container does not share a pi volume or credentials with any other project. Provider keys and `GH_TOKEN` arrive from the host environment (`devc` sources `~/.config/devc/env`), and sessions, trust and gh config stay on this project's private `pi-config` volume.
 
