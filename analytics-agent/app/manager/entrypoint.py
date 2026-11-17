@@ -5,7 +5,11 @@ running MCP server through one shared read-only ``MCPCapabilities`` instance,
 uses one ``ManagerLLMClient`` for both its own discrete calls and the analyst
 sub-runs (the client extends ``LLMClient``, so it serves both protocols), and
 runs the manager LangGraph workflow — decompose, sub-analyses, a bounded
-follow-up round when the inspect stage requests one (M7.5), synthesize.
+follow-up round when the inspect stage requests one (M7.5), synthesize. The
+sub-analyses (and the follow-up round) fan out as concurrent analyst runs
+bounded by ``MANAGER_MAX_PARALLELISM`` (M8, D1); each run is handed its own
+counting wrapper around the shared capability, so per-evidence call counts
+stay exact under that concurrency (D2).
 With Langfuse credentials the whole run
 is traced under one manager trace: manager run → analyst sub-runs → nodes.
 Tracing stays fail-open; a ``--out`` directory persists the report and the
@@ -28,13 +32,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from app.agent.capabilities import CountingCapabilities, MCPCapabilities
+from app.agent.capabilities import Capabilities, CountingCapabilities, MCPCapabilities
 from app.agent.graph import AgentServices, build_graph
 from app.agent.state import AgentState
 from app.agent.tracing import AgentTracer
 from app.config import get_settings
 from app.manager.evidence import EvidenceRecord
-from app.manager.graph import ManagerServices, ToolCallCounter, build_manager_graph
+from app.manager.graph import (
+    DEFAULT_MAX_PARALLELISM,
+    ManagerServices,
+    build_manager_graph,
+)
 from app.manager.llm import create_manager_llm
 from app.manager.state import ManagerState, ManagerStatus
 
@@ -88,30 +96,33 @@ async def _run_request(
     analyst_max_attempts: int,
     max_rows: int,
     tracer: AgentTracer | None,
-    tool_call_counter: ToolCallCounter | None = None,
+    manager_max_parallelism: int = DEFAULT_MAX_PARALLELISM,
 ) -> ManagerState:
     """Run one management request end-to-end with injected dependencies.
 
     The tracer config (fail-open) is shared by the manager graph and every
     analyst sub-run so a trace shows manager run → analyst sub-runs → nodes.
 
-    ``tool_call_counter`` is the same object as ``capabilities`` whenever the
-    caller installed the counting wrapper (``run_manager`` does). It is passed
-    separately so a caller that injects plain capabilities — tests, library
-    embedders that do not care about cost — keeps working unchanged, with
-    evidence records simply carrying no counts.
+    ``capabilities`` is the shared read-only MCP surface. Every analyst
+    sub-run gets its own counting decorator around it (installed by the
+    manager graph, D2), so each evidence record owns exactly the calls its
+    run spent even when runs overlap. When the caller installed a counter at
+    this level too (``run_manager`` does), that outer wrapper additionally
+    reports the whole run's total.
     """
     config = tracer.run_config(request) if tracer is not None else None
 
-    analyst_services = AgentServices(
-        llm=analyst_llm,
-        capabilities=capabilities,
-        max_attempts=analyst_max_attempts,
-        max_rows=max_rows,
-    )
-    analyst_graph = build_graph(analyst_services)
-
-    async def run_analyst(question: str) -> AgentState:
+    async def run_analyst(question: str, surface: Capabilities | None = None) -> AgentState:
+        # One analyst graph per sub-run: the capability surface is per-run
+        # (a fresh counter), so the compiled graph cannot be shared. Graph
+        # construction is pure wiring; the model and MCP calls dominate cost.
+        analyst_services = AgentServices(
+            llm=analyst_llm,
+            capabilities=surface if surface is not None else capabilities,
+            max_attempts=analyst_max_attempts,
+            max_rows=max_rows,
+        )
+        analyst_graph = build_graph(analyst_services)
         return await analyst_graph.ainvoke(
             {"question": question, "status": "planning", "attempts": 0}, config=config
         )
@@ -120,7 +131,8 @@ async def _run_request(
         llm=llm,
         run_analyst=run_analyst,
         max_attempts=manager_max_attempts,
-        tool_call_counter=tool_call_counter,
+        max_parallelism=manager_max_parallelism,
+        capabilities=capabilities,
     )
     manager_graph = build_manager_graph(manager_services)
     return await manager_graph.ainvoke({"request": request}, config=config)
@@ -132,7 +144,9 @@ async def run_manager(request: str, out_dir: str | Path | None = None) -> Manage
     llm = create_manager_llm()
     # One counting wrapper around the single capability instance: CLI, library
     # and harness callers all get real per-tool counts through the result,
-    # while the manager package stays free of evaluation imports.
+    # while the manager package stays free of evaluation imports. The manager
+    # nests a per-run counter inside it, so this outer count is the run total
+    # and each evidence record carries its own share of it.
     capabilities = CountingCapabilities(MCPCapabilities())
     tracer = AgentTracer()
     state: ManagerState = {}
@@ -147,10 +161,8 @@ async def run_manager(request: str, out_dir: str | Path | None = None) -> Manage
             manager_max_attempts=settings.manager_max_attempts,
             analyst_max_attempts=settings.agent_max_attempts,
             max_rows=settings.max_rows,
+            manager_max_parallelism=settings.manager_max_parallelism,
             tracer=tracer,
-            # The wrapper is the counter: it records every call the analyst
-            # sub-runs make through this one capability instance.
-            tool_call_counter=capabilities,
         )
     except Exception as error:
         # Keep the failure text for the artifact below, then let it propagate:

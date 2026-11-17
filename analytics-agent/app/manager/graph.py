@@ -32,16 +32,29 @@ Failure policy (kept deliberately simple, per D009's fixed pipeline):
 
 Exceptions raised by ``run_analyst`` propagate (mirroring the agent's
 ``call_tool`` contract): the analyst graph reports its own failures in state.
+When a sub-run does raise, every in-flight sibling is allowed to settle before
+the first exception is re-raised, so no task is orphaned and the calls the
+aborted round spent are still counted (M8, R4).
+
+Parallelism (M8, D1): the sub-analyses and the single follow-up round fan out
+as concurrent analyst runs under a semaphore of ``max_parallelism``; results
+are collected in question order, so evidence indexing never depends on which
+run finished first. Per-run call attribution is exact under that fan-out
+because each run gets its own counting decorator around the shared capability
+(D2) — a snapshot/delta over the shared counter would double-count once two
+runs overlap.
 """
 
+import asyncio
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from app.agent.capabilities import Capabilities, CountingCapabilities
 from app.agent.llm import LLMError
 from app.agent.state import AgentState
 from app.manager.decompose import DecompositionError, decompose_request
@@ -79,20 +92,12 @@ def _table_names_from_seed() -> list[str]:
     return list(seed["tables"])
 
 
-class ToolCallCounter(Protocol):
-    """Counting contract the manager expects from the MCP capability wrapper.
+# Default fan-out width (spec D1); ``MANAGER_MAX_PARALLELISM`` overrides it at
+# the composition root.
+DEFAULT_MAX_PARALLELISM = 4
 
-    Satisfied structurally by ``CountingCapabilities``, so the manager never
-    imports the evaluation package (and the counter stays a plain decorator).
-    """
-
-    def snapshot(self) -> dict[str, int]:
-        """Return a copy of the per-tool counts right now."""
-        ...
-
-    def delta(self, snapshot: dict[str, int]) -> dict[str, int]:
-        """Return the per-tool calls made since ``snapshot``."""
-        ...
+# One analyst run's outcome: its final state plus the MCP calls it spent.
+_AnalysisOutcome = tuple[AgentState, dict[str, int]]
 
 
 @dataclass
@@ -101,15 +106,22 @@ class ManagerServices:
 
     llm: ManagerLLM
     # Runs one grounded analyst sub-analysis and returns its final state.
-    # Actual wiring (shared capabilities, LLM, tracer config) is M7.4's job.
-    run_analyst: Callable[[str], Awaitable[AgentState]]
+    # The second argument is the capability surface for that sub-run: in
+    # production a fresh counting decorator around ``capabilities``, so the
+    # run's MCP calls are attributable without a snapshot/delta (D2). It is
+    # ``None`` when no shared surface was injected (a caller that does not
+    # care about cost).
+    run_analyst: Callable[[str, Capabilities | None], Awaitable[AgentState]]
     # Bounded retries for transient LLM failures; the budget is shared by
     # the retryable stages (decompose / inspect / synthesize).
     max_attempts: int = 2
-    # Optional MCP call counter: each analyst run's cost is attributed to the
-    # evidence record it produced. Absent by default, so the graph — and every
-    # caller that does not care about cost — behaves exactly as before.
-    tool_call_counter: ToolCallCounter | None = None
+    # How many analyst runs may be in flight at once (MANAGER_MAX_PARALLELISM).
+    # 1 reproduces the old sequential behavior exactly.
+    max_parallelism: int = DEFAULT_MAX_PARALLELISM
+    # The shared read-only capability surface the fan-out runs through; each
+    # run is wrapped in its own counter. Absent by default, so the graph — and
+    # every caller that does not care about cost — behaves exactly as before.
+    capabilities: Capabilities | None = None
     # Table-name schema hint; defaults to the curated metadata seed.
     table_names: list[str] = field(default_factory=_table_names_from_seed)
 
@@ -145,28 +157,62 @@ def build_manager_graph(services: ManagerServices) -> Any:
             "decomposition_error": None,
         }
 
-    async def _analyse(question: str) -> tuple[AgentState, dict[str, int]]:
-        """Run one analyst sub-analysis, attributing its MCP calls.
+    async def _analyse(question: str) -> _AnalysisOutcome:
+        """Run one analyst sub-analysis, attributing exactly its MCP calls.
 
-        The counter is snapshotted around the run, so the record gets exactly
-        the calls that run spent — including calls from any retry inside it.
-        Without a counter (a library caller that does not care about cost) the
-        attribution is simply empty.
+        Each run gets a fresh counting decorator around the shared capability
+        surface, so the record owns precisely the calls its own run spent —
+        including calls from any retry inside it. That stays exact when runs
+        overlap, which a snapshot/delta over the shared counter would not:
+        two concurrent runs would each absorb the other's calls.
+
+        Without a shared surface (a library caller that does not care about
+        cost) the attribution is simply empty.
         """
-        counter = services.tool_call_counter
-        if counter is None:
-            return await services.run_analyst(question), {}
-        before = counter.snapshot()
-        sub_state = await services.run_analyst(question)
-        return sub_state, counter.delta(before)
+        shared = services.capabilities
+        surface = CountingCapabilities(shared) if shared is not None else None
+        sub_state = await services.run_analyst(question, surface)
+        return sub_state, surface.snapshot() if surface is not None else {}
+
+    async def _analyse_all(questions: Sequence[str]) -> list[_AnalysisOutcome]:
+        """Fan the questions out, bounded, and return outcomes in input order.
+
+        ``asyncio.gather`` is the fan-out: every run is started before any is
+        awaited, and it returns one outcome per question in *input* order, so
+        evidence indexing cannot depend on completion order.
+
+        Exceptions are collected (``return_exceptions=True``) rather than
+        cancelling siblings: every in-flight run settles, then the first
+        exception — by question order, so it is deterministic — is re-raised.
+        A crash therefore still propagates (the ``run_analyst`` contract)
+        without orphaning a task or discarding the calls already spent.
+        """
+        # A semaphore of 0 would deadlock, so clamp the floor here too rather
+        # than trusting every constructor (the setting already validates it).
+        semaphore = asyncio.Semaphore(max(1, services.max_parallelism))
+
+        async def _bounded(question: str) -> _AnalysisOutcome:
+            async with semaphore:
+                return await _analyse(question)
+
+        outcomes = await asyncio.gather(
+            *(_bounded(question) for question in questions), return_exceptions=True
+        )
+        results: list[_AnalysisOutcome] = []
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                raise outcome
+            results.append(outcome)
+        return results
 
     async def _run_sub_analyses(state: ManagerState) -> dict[str, Any]:
+        questions = list(state["sub_questions"])
+        # Parallel by D1; evidence still indexed by sub-question position.
+        outcomes = await _analyse_all(questions)
         evidence: list[EvidenceRecord] = []
         errors: list[str] = []
-        # Sequential by D009 (the model server is the bottleneck; parallelism
-        # is a pure optimization that can be added without state changes).
-        for index, question in enumerate(state["sub_questions"]):
-            sub_state, tool_calls = await _analyse(question)
+        for index, (question, outcome) in enumerate(zip(questions, outcomes, strict=True)):
+            sub_state, tool_calls = outcome
             record = EvidenceRecord.from_agent_state(
                 index, question, sub_state, tool_calls=tool_calls
             )
@@ -234,16 +280,19 @@ def build_manager_graph(services: ManagerServices) -> Any:
         """Run the single follow-up round's questions through the analyst.
 
         Exactly one round by construction (the graph never loops back to
-        inspect). Follow-up records are appended to the evidence, marked
-        ``is_follow_up``, and number after the sub-analyses; a follow-up
-        failure is recorded and the round still proceeds to synthesis.
+        inspect), fanned out under the same bounded parallelism as the
+        sub-analyses (R2). Follow-up records are appended to the evidence,
+        marked ``is_follow_up``, and number after the sub-analyses; a
+        follow-up failure is recorded and the round still proceeds to
+        synthesis.
         """
-        questions = state.get("follow_up_questions", [])
+        questions = list(state.get("follow_up_questions", []))
         evidence = list(state.get("evidence", []))
         errors: list[str] = []
         start_index = len(evidence)
-        for offset, question in enumerate(questions):
-            sub_state, tool_calls = await _analyse(question)
+        outcomes = await _analyse_all(questions)
+        for offset, (question, outcome) in enumerate(zip(questions, outcomes, strict=True)):
+            sub_state, tool_calls = outcome
             record = EvidenceRecord.from_agent_state(
                 start_index + offset,
                 question,
