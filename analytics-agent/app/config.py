@@ -27,6 +27,10 @@ class Settings(BaseSettings):
         default=10.0, validation_alias="QUERY_TIMEOUT_SECONDS", gt=0
     )
     max_rows: int = Field(default=100, validation_alias="MAX_ROWS", ge=1, le=1000)
+    # Upper bound of the asyncpg pool. Concurrent analyst sessions (M8) hit the
+    # server at once, so this must exceed the old literal of 5; the pool's
+    # min_size stays 1 so a single-client CLI run reserves nothing extra.
+    db_pool_max_size: int = Field(default=10, validation_alias="DB_POOL_MAX_SIZE", ge=1, le=100)
 
     # ------------------------------------------------------------------
     # Metadata / semantic retrieval (M3)
