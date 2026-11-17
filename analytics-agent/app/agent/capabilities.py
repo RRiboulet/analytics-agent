@@ -72,15 +72,6 @@ class CountingCapabilities:
         """Return a copy of the per-tool counts taken at this moment."""
         return dict(self.calls)
 
-    def delta(self, snapshot: dict[str, int]) -> dict[str, int]:
-        """Per-tool calls made since ``snapshot``, zero entries dropped.
-
-        Counts only grow (there is no reset), so a tool not called since the
-        snapshot is absent from the result rather than reported as zero.
-        """
-        differences = {name: count - snapshot.get(name, 0) for name, count in self.calls.items()}
-        return {name: count for name, count in differences.items() if count > 0}
-
     def __getattr__(self, item: str) -> Any:
         return getattr(self._inner, item)
 

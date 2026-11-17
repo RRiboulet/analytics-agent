@@ -13,7 +13,7 @@ from app.agent.entrypoint import _run_question
 from app.agent.graph import AgentServices, build_graph, failure_reason
 from app.agent.llm import FakeLLM, LLMError
 from app.agent.state import AgentStatus
-from app.progress import ProgressEvent, ProgressEventType
+from app.progress import ProgressEmitter, ProgressEvent, ProgressEventType
 
 
 @pytest.mark.asyncio
@@ -643,3 +643,22 @@ async def test_schema_retrieval_failure_reports_the_tool_reason() -> None:
     terminal = sink.events[-1]
     assert terminal.type == ProgressEventType.RUN_FAILED
     assert "connection refused" in (terminal.reason or "")
+
+
+def test_an_emitter_and_a_sink_together_are_rejected() -> None:
+    """One run is one stream: an emitter already owns the run's sink (D10).
+
+    A nested runner that passed ``sink=`` alongside the parent's emitter would
+    otherwise silently start a second stream inside the parent's run, with the
+    emitter winning and the sink ignored. The invalid combination fails loudly
+    at graph build instead.
+    """
+    services = AgentServices(
+        llm=FakeLLM(sql="SELECT 1", answer="ok"),
+        capabilities=StubCapabilities(),
+        sink=RecordingSink(),
+        emitter=ProgressEmitter(RecordingSink()),
+    )
+
+    with pytest.raises(ValueError, match="either an emitter or a sink"):
+        build_graph(services)

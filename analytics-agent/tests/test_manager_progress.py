@@ -149,6 +149,19 @@ def _terminal(sink: RecordingSink) -> ProgressEvent:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# One compiled graph per run (D10)
+# ---------------------------------------------------------------------------
+
+
+def test_both_graph_builders_document_one_graph_per_run() -> None:
+    """D10: a compiled graph serves exactly one run, and each builder says so."""
+    for builder in (build_graph, build_manager_graph):
+        doc = builder.__doc__ or ""
+        assert "exactly one run" in doc
+        assert "D10" in doc
+
+
 async def test_successful_run_emits_the_pipeline_in_stage_order() -> None:
     questions = ["Revenue by category?", "Top sellers?"]
     llm = FakeManagerLLM(raw="\n".join(questions))
@@ -387,7 +400,10 @@ async def test_unusable_inspect_output_emits_a_degraded_decision_with_its_reason
     assert decision.status == "degraded"
     assert "hard cap is 2" in (decision.reason or "")
     assert "hard cap is 2" in (state["inspect_error"] or "")
-    assert decision.questions is None  # a degradation decides nothing
+    # A degraded decision is readable like any other: an explicit empty list,
+    # never a missing field, so a consumer never has to special-case it.
+    assert decision.questions == []
+    assert decision.attempt == 1
     assert _terminal(sink).type == ProgressEventType.RUN_COMPLETED
     assert _terminal(sink).report == state["report"]
 
@@ -402,6 +418,8 @@ async def test_persistent_inspect_failure_degrades_with_its_reason() -> None:
     assert decision.status == "degraded"
     assert "inspect LLM call failed" in (decision.reason or "")
     assert "503" in (decision.reason or "")
+    assert decision.questions == []
+    assert decision.attempt == 2  # the attempt whose retry budget was exhausted
     assert _terminal(sink).type == ProgressEventType.RUN_COMPLETED
 
 

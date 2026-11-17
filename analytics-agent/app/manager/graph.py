@@ -173,7 +173,14 @@ class ManagerServices:
 
 
 def build_manager_graph(services: ManagerServices) -> Any:
-    """Compile the manager state machine."""
+    """Compile the manager state machine.
+
+    The compiled graph serves exactly one run: its progress sink and event
+    sequence counter bind here, at construction. Build a graph per invocation
+    (D10) — a graph cached across invocations would fuse two runs into one
+    indistinguishable stream (nested analyst events included) and the second
+    run's events would never reach its own consumer.
+    """
     # One emitter per manager run: it owns the run's sequence counter and is a
     # no-op when no sink was injected. Every nested analyst run emits through a
     # child of it (same sink, same counter), so the run is one ordered stream.
@@ -345,11 +352,15 @@ def build_manager_graph(services: ManagerServices) -> Any:
                 }
             reason = f"inspect LLM call failed: {error}"
             # Degraded, not failed: the follow-up round is an enhancement and
-            # the evidence is already complete. The event carries the reason.
+            # the evidence is already complete. The event carries the reason,
+            # and an explicit empty ``questions`` so a consumer can read the
+            # decision uniformly (no follow-ups) on every branch.
             progress.emit(
                 ProgressEventType.INSPECTION_DECIDED,
                 status="degraded",
                 reason=reason,
+                questions=[],
+                attempt=state.get("attempts", 1),
             )
             return {
                 **update,
@@ -368,6 +379,8 @@ def build_manager_graph(services: ManagerServices) -> Any:
                 ProgressEventType.INSPECTION_DECIDED,
                 status="degraded",
                 reason=str(error),
+                questions=[],
+                attempt=state.get("attempts", 1),
             )
             return {
                 **update,
