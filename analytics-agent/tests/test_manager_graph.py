@@ -31,6 +31,7 @@ from app.manager.graph import (
 )
 from app.manager.llm import FakeManagerLLM
 from app.manager.state import ManagerState, ManagerStatus
+from app.progress import ProgressEmitter
 
 
 def _ok_sub_state(answer: str = "found it") -> AgentState:
@@ -64,7 +65,8 @@ class StubAnalyst:
 
     The second argument is the capability surface for that sub-run, which the
     manager hands over per run (M8, D2); ``None`` when no shared surface was
-    injected.
+    injected. The third is the progress emitter the manager derived for this
+    sub-run (M8, R5), which a stub runner may simply ignore.
     """
 
     def __init__(self, scripts: dict[str, AgentState]) -> None:
@@ -72,7 +74,12 @@ class StubAnalyst:
         self.calls: list[str] = []
         self.surfaces: list[Capabilities | None] = []
 
-    async def __call__(self, question: str, capabilities: Capabilities | None = None) -> AgentState:
+    async def __call__(
+        self,
+        question: str,
+        capabilities: Capabilities | None = None,
+        emitter: ProgressEmitter | None = None,
+    ) -> AgentState:
         self.calls.append(question)
         self.surfaces.append(capabilities)
         return self.scripts[question]
@@ -115,7 +122,12 @@ class CountingAnalyst(StubAnalyst):
         self.spend = spend
         self._runs: dict[str, int] = {}
 
-    async def __call__(self, question: str, capabilities: Capabilities | None = None) -> AgentState:
+    async def __call__(
+        self,
+        question: str,
+        capabilities: Capabilities | None = None,
+        emitter: ProgressEmitter | None = None,
+    ) -> AgentState:
         assert capabilities is not None, "an attributed run needs a capability surface"
         before = sum(self.shared.snapshot().values())
         run = self._runs.get(question, 0)
@@ -154,7 +166,12 @@ class RoundAnalyst:
         self.spend = spend or {}
         self.timeout = 0.5
 
-    async def __call__(self, question: str, capabilities: Capabilities | None = None) -> AgentState:
+    async def __call__(
+        self,
+        question: str,
+        capabilities: Capabilities | None = None,
+        emitter: ProgressEmitter | None = None,
+    ) -> AgentState:
         round_id = self._round_of[question]
         self.events.append(f"start:{question}")
         self._active[round_id] += 1
@@ -192,7 +209,12 @@ class ExplodingAnalyst:
         self.exploded = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def __call__(self, question: str, capabilities: Capabilities | None = None) -> AgentState:
+    async def __call__(
+        self,
+        question: str,
+        capabilities: Capabilities | None = None,
+        emitter: ProgressEmitter | None = None,
+    ) -> AgentState:
         self.started.append(question)
         if len(self.started) >= self.expected:
             self.all_started.set()
@@ -402,7 +424,11 @@ async def test_evidence_order_does_not_depend_on_completion_order() -> None:
     started: list[str] = []
     finished: list[str] = []
 
-    async def analyst(question: str, capabilities: Capabilities | None = None) -> AgentState:
+    async def analyst(
+        question: str,
+        capabilities: Capabilities | None = None,
+        emitter: ProgressEmitter | None = None,
+    ) -> AgentState:
         started.append(question)
         if len(started) == len(questions):
             all_started.set()

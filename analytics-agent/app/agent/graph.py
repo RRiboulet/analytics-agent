@@ -51,6 +51,12 @@ class AgentServices:
     # Optional progress sink (PLAN M8). Absent by default, so every existing
     # caller — CLI, library, tests — runs with no emission and no cost.
     sink: ProgressSink | None = None
+    # An emitter derived from the run this one is nested in (a manager hands
+    # one to each analyst sub-run). It already carries the parent's sink and
+    # sequence counter, so the nested events continue the parent's single
+    # stream instead of restarting at 1 — and they arrive stamped with the
+    # sub-question they belong to. Takes precedence over ``sink``.
+    emitter: ProgressEmitter | None = None
 
 
 def failure_reason(state: AgentState) -> str | None:
@@ -105,8 +111,9 @@ def _build_schema_text(tables: list[dict[str, Any]], relationships: list[dict[st
 def build_graph(services: AgentServices) -> Any:
     """Compile the LangGraph state machine."""
     # One emitter per graph (i.e. per run): it owns the run's sequence numbers
-    # and is a no-op when no sink was injected.
-    progress = ProgressEmitter(services.sink)
+    # and is a no-op when no sink was injected. A nested run reuses the emitter
+    # its parent derived for it, so the run's numbering stays one sequence.
+    progress = services.emitter if services.emitter is not None else ProgressEmitter(services.sink)
 
     async def _plan(state: AgentState) -> dict[str, Any]:
         progress.emit(ProgressEventType.RUN_STARTED, question=state["question"], attempt=1)
