@@ -11,9 +11,13 @@
         --fg: #1d1d1b;
         --muted: #6b6b66;
         --line: #d9d9d4;
+        --panel: #ffffff;
+        --code: #f2f2ee;
         --accent: #2f6f4f;
         --danger: #a33a2b;
-        --panel: #ffffff;
+        --warn: #8a6412;
+        --followup: #8a5a12;
+        --followup-soft: #fdf4e3;
       }
       @media (prefers-color-scheme: dark) {
         :root {
@@ -21,9 +25,13 @@
           --fg: #ecece8;
           --muted: #9b9b94;
           --line: #33342f;
+          --panel: #1c1d1b;
+          --code: #171816;
           --accent: #7cc49a;
           --danger: #e08a78;
-          --panel: #1c1d1b;
+          --warn: #d9b262;
+          --followup: #e0b979;
+          --followup-soft: #241d12;
         }
       }
       * { box-sizing: border-box; }
@@ -31,12 +39,19 @@
         margin: 0;
         background: var(--bg);
         color: var(--fg);
-        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+        font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif;
       }
-      main { max-width: 900px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+      main { max-width: 960px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
       h1 { font-size: 1.35rem; margin: 0 0 0.25rem; }
-      h2 { font-size: 1rem; margin: 1.75rem 0 0.5rem; }
-      .lede { color: var(--muted); margin: 0 0 1.5rem; }
+      h2 {
+        font-size: 0.8rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin: 2rem 0 0.6rem;
+      }
+      h3 { font-size: 0.78rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin: 0.9rem 0 0.3rem; }
+      .lede { color: var(--muted); margin: 0 0 1.5rem; max-width: 62ch; }
       form { display: grid; gap: 0.6rem; }
       label { font-weight: 600; }
       textarea {
@@ -69,49 +84,164 @@
         border-radius: 6px;
         background: var(--panel);
         color: var(--muted);
+        overflow-wrap: anywhere;
       }
       #status[data-state="running"] { color: var(--fg); }
+      #status[data-state="queued"],
+      #status[data-state="warn"] { color: var(--warn); border-color: var(--warn); }
       #status[data-state="completed"] { color: var(--accent); border-color: var(--accent); }
       #status[data-state="failed"] { color: var(--danger); border-color: var(--danger); }
+      #request-panel { border-left: 3px solid var(--accent); padding: 0.1rem 0 0.1rem 0.9rem; }
+      #request-panel .request-text { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+      .muted { color: var(--muted); margin: 0.35rem 0 0; }
+      /* ---- sub-questions ---- */
+      #sub-questions { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.25rem; }
+      #sub-questions li { display: flex; gap: 0.6rem; align-items: baseline; overflow-wrap: anywhere; }
+      .sub-question-index { flex: 0 0 1.5rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+      /* ---- evidence cards ---- */
+      #analysis-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; }
+      .round-divider {
+        margin: 0.9rem 0 0.15rem;
+        padding-top: 0.7rem;
+        border-top: 1px dashed var(--line);
+        color: var(--followup);
+        font-size: 0.76rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .card {
+        border: 1px solid var(--line);
+        border-left: 3px solid var(--accent);
+        border-radius: 6px;
+        background: var(--panel);
+      }
+      .card[data-state="failed"] { border-left-color: var(--danger); }
+      .card[data-state="unfinished"] { border-left-style: dashed; }
+      .card--follow-up { border-left-color: var(--followup); background: var(--followup-soft); }
+      .card > details { padding: 0; }
+      .card summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem 0.6rem;
+        align-items: baseline;
+        padding: 0.55rem 0.75rem;
+        cursor: pointer;
+        overflow-wrap: anywhere;
+      }
+      .card summary::-webkit-details-marker { color: var(--muted); }
+      .badge {
+        flex: 0 0 auto;
+        padding: 0.05rem 0.45rem;
+        border: 1px solid var(--accent);
+        border-radius: 999px;
+        color: var(--accent);
+        font-size: 0.72rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .badge--followup { border-color: var(--followup); color: var(--followup); }
+      .card-index { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 0.82rem; }
+      .card-question { flex: 1 1 18ch; font-weight: 600; }
+      .card-state { color: var(--muted); font-size: 0.8rem; }
+      .card[data-state="running"] .card-state,
+      .card[data-state="queued"] .card-state { color: var(--warn); }
+      .card[data-state="completed"] .card-state { color: var(--accent); }
+      .card[data-state="failed"] .card-state { color: var(--danger); }
+      .card-meta { flex: 1 1 100%; color: var(--muted); font-size: 0.8rem; }
+      .card-body { padding: 0 0.75rem 0.75rem; }
+      /* ---- stages ---- */
+      .stages { list-style: none; margin: 0; padding: 0 0 0 0.1rem; display: grid; gap: 0.15rem; }
+      .stage {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.45rem;
+        align-items: baseline;
+        font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
+      .stage::before { content: "›"; color: var(--line); }
+      .stage-label { color: var(--fg); }
+      .stage[data-state="warn"] .stage-label { color: var(--warn); }
+      .stage[data-state="bad"] .stage-label { color: var(--danger); }
+      .stage-attempt { color: var(--muted); font-size: 0.78rem; }
+      .stage-detail { color: var(--muted); }
+      /* ---- blocks, sql, rows ---- */
+      .block-title { margin-top: 0.8rem; }
+      .card-sql {
+        margin: 0;
+        padding: 0.55rem 0.65rem;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--code);
+        font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .rows-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }
+      .rows-table { border-collapse: collapse; width: 100%; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .rows-table th,
+      .rows-table td { text-align: left; padding: 0.28rem 0.55rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+      .rows-table thead th { background: var(--code); color: var(--muted); font-weight: 600; }
+      .rows-table tbody tr:last-child td { border-bottom: 0; }
+      .rows-note, .card-answer, .card-error, .card-calls {
+        margin: 0.35rem 0 0;
+        overflow-wrap: anywhere;
+      }
+      .rows-note { color: var(--warn); font-size: 0.82rem; }
+      .card-error { color: var(--danger); }
+      .card-calls { color: var(--muted); font-size: 0.8rem; }
+      /* ---- inspect, synthesis, verdict ---- */
+      .detail { margin: 0; overflow-wrap: anywhere; }
+      .detail[data-state="ok"] { color: var(--accent); }
+      .detail[data-state="warn"] { color: var(--warn); }
+      .detail[data-state="bad"] { color: var(--danger); }
+      #inspect-questions { margin: 0.4rem 0 0; padding-left: 1.15rem; overflow-wrap: anywhere; }
+      /* ---- notes ---- */
+      #notes { list-style: none; margin: 0.9rem 0 0; padding: 0; display: grid; gap: 0.2rem; }
+      #notes .note { padding: 0.2rem 0.55rem; border-left: 3px solid var(--warn); color: var(--warn); font-size: 0.85rem; overflow-wrap: anywhere; }
+      /* ---- raw log ---- */
+      #log { margin-top: 1.5rem; }
+      #log summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
       #events {
         list-style: none;
-        margin: 0;
+        margin: 0.5rem 0 0;
         padding: 0;
         border: 1px solid var(--line);
         border-radius: 6px;
         background: var(--panel);
-        max-height: 22rem;
+        max-height: 20rem;
         overflow: auto;
-        font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+        font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
       }
-      #events:empty::after {
-        content: "Events appear here as the run progresses.";
-        display: block;
-        padding: 0.75rem;
-        color: var(--muted);
-      }
-      #events .event {
-        display: flex;
-        gap: 0.6rem;
-        padding: 0.35rem 0.75rem;
-        border-bottom: 1px solid var(--line);
-      }
+      #events .event { display: flex; flex-wrap: wrap; gap: 0.6rem; padding: 0.3rem 0.7rem; border-bottom: 1px solid var(--line); }
       #events .event:last-child { border-bottom: 0; }
       #events .event-type { flex: 0 0 13.5rem; color: var(--accent); }
       #events .event-detail { color: var(--fg); overflow-wrap: anywhere; }
-      .summary { display: flex; flex-wrap: wrap; gap: 1.25rem; color: var(--muted); }
+      /* ---- result ---- */
+      #result { margin-top: 2rem; }
+      .summary { display: flex; flex-wrap: wrap; gap: 1rem 1.5rem; margin: 0; color: var(--muted); }
       .summary strong { color: var(--fg); font-weight: 600; }
-      #final-error { color: var(--danger); overflow-wrap: anywhere; }
-      #report {
-        margin: 0.5rem 0 0;
+      #final-status[data-state="ok"] { color: var(--accent); }
+      #final-status[data-state="bad"] { color: var(--danger); }
+      #tool-call-breakdown { list-style: none; margin: 0.5rem 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.4rem 0.9rem; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      #tool-call-breakdown li { color: var(--muted); }
+      #tool-call-breakdown .tool-name { color: var(--fg); margin-right: 0.35rem; }
+      #final-error { color: var(--danger); overflow-wrap: anywhere; margin: 0.9rem 0 0; }
+      #rejected { margin-top: 1rem; padding: 0.75rem 0.9rem; border: 1px solid var(--danger); border-radius: 6px; }
+      .rejected-label { margin: 0; color: var(--danger); font-weight: 600; font-size: 0.82rem; letter-spacing: 0.04em; text-transform: uppercase; }
+      .rejected-note { margin: 0.35rem 0 0; color: var(--muted); font-size: 0.85rem; }
+      #rejected-report, #report {
+        margin: 0.6rem 0 0;
         padding: 1rem;
         border: 1px solid var(--line);
         border-radius: 6px;
         background: var(--panel);
         white-space: pre-wrap;
         overflow-wrap: anywhere;
-        font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+        font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
       }
+      #rejected-report { border-color: var(--danger); background: transparent; }
       [hidden] { display: none !important; }
     </style>
   </head>
@@ -119,8 +249,9 @@
     <main>
       <h1>Analytics manager</h1>
       <p class="lede">
-        Submit a management request. The run's progress streams in below and ends with the
-        grounded report, its elapsed time and the MCP calls it spent.
+        Submit a management request. The pipeline renders as it runs — decomposed sub-questions,
+        each analysis with its SQL, rows and answer, the inspect decision, the groundedness verdict
+        — and ends with the grounded report, its elapsed time and the MCP calls it spent.
       </p>
 
       <!-- data-mode values are the server's RunMode names; ticket 07 turns this
@@ -141,13 +272,55 @@
         Not started.
       </p>
 
-      <!-- Ticket 06 renders the live pipeline here. This plain event log is the
-           shell: each row carries data-event-type / data-seq / data-index so the
-           rich renderer can replace the rendering without changing the stream. -->
-      <section id="pipeline" data-renderer="plain">
-        <h2>Progress</h2>
-        <ol id="events" aria-live="polite"></ol>
+      <!-- The live pipeline (ticket 06). Every panel below is filled from the
+           SSE progress stream; #analysis-cards holds one collapsible card per
+           evidence record, keyed by the sub-question index the events carry. -->
+      <section id="pipeline" data-renderer="pipeline" hidden>
+        <div id="request-panel" hidden>
+          <h2>Request</h2>
+          <p class="request-text" id="request-text"></p>
+        </div>
+
+        <section id="decomposition" hidden>
+          <h2>Sub-questions</h2>
+          <p class="muted" id="decomposition-note"></p>
+          <ol id="sub-questions"></ol>
+        </section>
+
+        <section id="analyses">
+          <h2>Analyses</h2>
+          <p class="muted" id="analyses-note">
+            One card per sub-analysis appears here as the run starts it.
+          </p>
+          <ol id="analysis-cards"></ol>
+        </section>
+
+        <section id="inspect" hidden>
+          <h2>Inspect decision</h2>
+          <p class="detail" id="inspect-verdict"></p>
+          <ul id="inspect-questions"></ul>
+        </section>
+
+        <section id="synthesis" hidden>
+          <h2>Synthesis</h2>
+          <p class="detail" id="synthesis-status"></p>
+        </section>
+
+        <section id="groundedness-panel" hidden>
+          <h2>Groundedness</h2>
+          <p class="detail" id="groundedness"></p>
+          <p class="muted" id="groundedness-reason"></p>
+        </section>
+
+        <ul id="notes"></ul>
       </section>
+
+      <!-- The plain renderer, kept as a collapsed diagnostic: every event the
+           server sent, including types this page does not render richly. -->
+      <details id="log" data-renderer="plain" hidden>
+        <summary>Raw event log</summary>
+        <ol id="events" aria-live="polite"></ol>
+      </details>
 
       <section id="result" hidden>
         <h2>Result</h2>
@@ -156,8 +329,23 @@
           <span>Elapsed <strong id="final-elapsed"></strong></span>
           <span>MCP calls <strong id="final-tool-calls"></strong></span>
         </p>
+        <ul id="tool-call-breakdown"></ul>
         <p id="final-error" hidden></p>
-        <pre id="report"></pre>
+
+        <!-- A groundedness rejection: the offending text, never the report. -->
+        <section id="rejected" hidden>
+          <p class="rejected-label">REJECTED — this is not the report</p>
+          <p class="rejected-note" id="rejected-note">
+            This text failed the groundedness check. It is not the run's report and no number in it
+            should be trusted.
+          </p>
+          <pre id="rejected-report"></pre>
+        </section>
+
+        <section id="report-section" hidden>
+          <h2>Report</h2>
+          <pre id="report"></pre>
+        </section>
       </section>
     </main>
 
@@ -165,23 +353,70 @@
       (() => {
         "use strict";
 
-        const endpoint = "/api/run";
+        const ENDPOINT = "/api/run";
+        // A rendered-row guard for the page's own sanity: the server already
+        // caps a query, but a wide result would still make an unreadable table.
+        // When this trims, the page says so (see renderRows).
+        const ROW_PREVIEW_LIMIT = 200;
+
+        // ---- elements --------------------------------------------------
         const form = document.getElementById("run-form");
         const requestBox = document.getElementById("request");
         const submit = document.getElementById("submit");
         const statusLine = document.getElementById("status");
+        const pipeline = document.getElementById("pipeline");
+        const requestPanel = document.getElementById("request-panel");
+        const requestText = document.getElementById("request-text");
+        const decompositionPanel = document.getElementById("decomposition");
+        const decompositionNote = document.getElementById("decomposition-note");
+        const subQuestionsList = document.getElementById("sub-questions");
+        const analysesNote = document.getElementById("analyses-note");
+        const cardsList = document.getElementById("analysis-cards");
+        const inspectPanel = document.getElementById("inspect");
+        const inspectVerdict = document.getElementById("inspect-verdict");
+        const inspectQuestions = document.getElementById("inspect-questions");
+        const synthesisPanel = document.getElementById("synthesis");
+        const synthesisStatus = document.getElementById("synthesis-status");
+        const verdictPanel = document.getElementById("groundedness-panel");
+        const verdictLine = document.getElementById("groundedness");
+        const verdictReason = document.getElementById("groundedness-reason");
+        const notesList = document.getElementById("notes");
+        const logPanel = document.getElementById("log");
         const eventsList = document.getElementById("events");
         const result = document.getElementById("result");
-        const reportBox = document.getElementById("report");
         const finalStatus = document.getElementById("final-status");
         const finalElapsed = document.getElementById("final-elapsed");
         const finalToolCalls = document.getElementById("final-tool-calls");
+        const toolCallBreakdown = document.getElementById("tool-call-breakdown");
         const finalError = document.getElementById("final-error");
+        const rejected = document.getElementById("rejected");
+        const rejectedReport = document.getElementById("rejected-report");
+        const reportSection = document.getElementById("report-section");
+        const reportBox = document.getElementById("report");
 
         // A visitor who opened the page with ?token=... has the optional shared
         // token forwarded as a header on the POST. No token -> no header, and
         // the server accepts when WEB_TOKEN is unset.
         const token = new URLSearchParams(window.location.search).get("token");
+
+        // One card per sub-question index; the key is why a record arriving in
+        // the final payload enriches the card the stream already created
+        // instead of duplicating it.
+        const cards = new Map();
+        let followUpDividerShown = false;
+        let sawTerminal = false;
+
+        // ---- small helpers ---------------------------------------------
+        function make(tag, className, text) {
+          const node = document.createElement(tag);
+          if (className) node.className = className;
+          if (text !== undefined && text !== null) node.textContent = String(text);
+          return node;
+        }
+
+        function show(node, visible) {
+          node.hidden = !visible;
+        }
 
         function setStatus(text, state) {
           statusLine.textContent = text;
@@ -192,18 +427,564 @@
           return `${Number(value || 0).toFixed(1)} s`;
         }
 
-        function reset() {
-          eventsList.replaceChildren();
-          reportBox.textContent = "";
-          finalStatus.textContent = "";
-          finalElapsed.textContent = "";
-          finalToolCalls.textContent = "";
-          finalError.textContent = "";
-          finalError.hidden = true;
-          result.hidden = true;
+        function truncate(value, limit) {
+          const text = typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+          return text.length > limit ? `${text.slice(0, limit)}…` : text;
         }
 
-        // One readable row per event type (ticket 06 replaces this rendering).
+        function isIndex(value) {
+          return Number.isInteger(value) && value >= 0;
+        }
+
+        function callTotal(toolCalls) {
+          return Object.values(toolCalls || {}).reduce((sum, count) => sum + Number(count || 0), 0);
+        }
+
+        function callsText(toolCalls) {
+          const entries = Object.entries(toolCalls || {}).filter(([, count]) => Number(count) > 0);
+          if (!entries.length) return "no MCP calls attributed";
+          entries.sort((a, b) => b[1] - a[1]);
+          const total = entries.reduce((sum, [, count]) => sum + Number(count), 0);
+          const detail = entries.map(([name, count]) => `${name} ${count}`).join(", ");
+          return `${total} MCP call${total === 1 ? "" : "s"} (${detail})`;
+        }
+
+        function formatCell(value) {
+          if (value === null || value === undefined) return "∅";
+          if (typeof value === "object") {
+            try {
+              return JSON.stringify(value);
+            } catch (_) {
+              return String(value);
+            }
+          }
+          return String(value);
+        }
+
+        // The server bounds every executed query with a row cap (the agent
+        // appends ``LIMIT <max_rows>``); a result whose length reaches that
+        // number was cut short by the server. The page reads the cap out of
+        // the executed SQL it displays, so truncation is stated, not implied.
+        function rowCapFromSql(sql) {
+          if (typeof sql !== "string") return null;
+          const matches = [...sql.matchAll(/\blimit\s+(\d+)\b/gi)];
+          if (!matches.length) return null;
+          const cap = Number(matches[matches.length - 1][1]);
+          return Number.isFinite(cap) && cap > 0 ? cap : null;
+        }
+
+        // ---- request, decomposition ------------------------------------
+        function showRequest(question) {
+          if (typeof question !== "string" || !question.trim()) return;
+          requestText.textContent = question;
+          show(requestPanel, true);
+          show(pipeline, true);
+        }
+
+        function pushNote(text, kind) {
+          const note = make("li", `note note--${kind || "info"}`, text);
+          notesList.append(note);
+          show(notesList, true);
+        }
+
+        function onRunStarted(data) {
+          if (isIndex(data.index)) {
+            // A nested analyst run: this is a stage of the card it belongs to.
+            const card = ensureCard(data.index, data.question, Boolean(data.is_follow_up));
+            if (card) stage(card, "start", "analysis started", data.attempt, null, "ok");
+            return;
+          }
+          showRequest(data.question);
+          setStatus("Running — the manager is working on the request.", "running");
+        }
+
+        function onRequestAccepted(data) {
+          showRequest(data.question);
+          setStatus("Running — decomposing the request into sub-questions.", "running");
+        }
+
+        function onDecomposed(data) {
+          const questions = Array.isArray(data.questions) ? data.questions : [];
+          subQuestionsList.replaceChildren();
+          questions.forEach((question, position) => {
+            const item = make("li");
+            item.append(make("span", "sub-question-index", position));
+            item.append(make("span", "sub-question-text", question));
+            subQuestionsList.append(item);
+          });
+          show(decompositionPanel, true);
+          show(pipeline, true);
+          if (!questions.length) {
+            decompositionNote.textContent = "The manager returned no sub-questions.";
+            setStatus("No sub-questions were produced, so no analysis can run.", "failed");
+            return;
+          }
+          const attempt = Number.isInteger(data.attempt) ? ` (attempt ${data.attempt})` : "";
+          decompositionNote.textContent =
+            `${questions.length} sub-question${questions.length === 1 ? "" : "s"}${attempt}. ` +
+            "Each analysis below is indexed by its position here.";
+          setStatus(`Running — ${questions.length} analyses under way.`, "running");
+        }
+
+        // ---- evidence cards --------------------------------------------
+        function ensureCard(index, question, isFollowUp) {
+          if (!isIndex(index)) return null;
+          const existing = cards.get(index);
+          if (existing) {
+            if (typeof question === "string" && question.trim()) {
+              existing.questionNode.textContent = question;
+            }
+            if (isFollowUp) existing.item.dataset.isFollowUp = "true";
+            return existing;
+          }
+          return createCard(index, question, isFollowUp);
+        }
+
+        function createCard(index, question, isFollowUp) {
+          if (isFollowUp && !followUpDividerShown) {
+            followUpDividerShown = true;
+            cardsList.append(make("li", "round-divider", "Follow-up round"));
+          }
+
+          const item = make("li", isFollowUp ? "card card--follow-up" : "card");
+          item.dataset.index = String(index);
+          item.dataset.isFollowUp = String(Boolean(isFollowUp));
+          item.dataset.state = "running";
+
+          const details = document.createElement("details");
+          details.open = true;
+          const summary = document.createElement("summary");
+          const badge = make(
+            "span",
+            isFollowUp ? "badge badge--followup" : "badge",
+            isFollowUp ? "Follow-up" : "Analysis",
+          );
+          const indexChip = make("span", "card-index", `#${index}`);
+          const questionNode = make(
+            "span",
+            "card-question",
+            typeof question === "string" && question.trim() ? question : "(question pending)",
+          );
+          const stateChip = make("span", "card-state", "running");
+          const meta = make("span", "card-meta", "");
+          summary.append(badge, indexChip, questionNode, stateChip, meta);
+
+          const body = make("div", "card-body");
+          const stages = make("ol", "stages");
+          stages.setAttribute("aria-label", "Analyst stages");
+          const sqlBlock = block("SQL", "pre", "card-sql");
+          const rowsBlock = block("Result rows", "div", "card-rows");
+          const answerBlock = block("Answer", "p", "card-answer");
+          const errorBlock = block("Error", "p", "card-error");
+          errorBlock.node.hidden = true;
+          answerBlock.node.hidden = true;
+          sqlBlock.node.hidden = true;
+          const calls = make("p", "card-calls", "");
+          body.append(stages, sqlBlock.node, rowsBlock.node, answerBlock.node, errorBlock.node, calls);
+          details.append(summary, body);
+          item.append(details);
+          cardsList.append(item);
+          show(analysesNote, false);
+
+          const card = {
+            index,
+            item,
+            stateChip,
+            meta,
+            questionNode,
+            stages,
+            sql: sqlBlock,
+            rows: rowsBlock,
+            answer: answerBlock,
+            error: errorBlock,
+            calls,
+            sqlText: null,
+            rowCount: null,
+            rowCapHit: false,
+            callsSummary: "",
+          };
+          cards.set(index, card);
+          return card;
+        }
+
+        // A titled block whose body is one element (``pre``/``p``/``div``).
+        function block(title, tag, className) {
+          const wrapper = make("div", "block");
+          wrapper.append(make("h3", "block-title", title));
+          const body = make(tag, className, "");
+          wrapper.append(body);
+          return { node: wrapper, body };
+        }
+
+        // One analyst stage line, stamped with the sub-question index it
+        // belongs to (and the attempt, when the event carries one).
+        function stage(card, kind, label, attempt, detail, state) {
+          const row = make("li", "stage");
+          row.dataset.index = String(card.index);
+          row.dataset.stage = kind;
+          if (Number.isInteger(attempt)) row.dataset.attempt = String(attempt);
+          if (state) row.dataset.state = state;
+          row.append(make("span", "stage-label", label));
+          if (Number.isInteger(attempt)) row.append(make("span", "stage-attempt", `attempt ${attempt}`));
+          if (detail) row.append(make("span", "stage-detail", detail));
+          card.stages.append(row);
+        }
+
+        function cardFor(data) {
+          return isIndex(data.index) ? cards.get(data.index) || null : null;
+        }
+
+        function updateMeta(card) {
+          const parts = [];
+          if (Number.isInteger(card.rowCount)) {
+            parts.push(`${card.rowCount} row${card.rowCount === 1 ? "" : "s"}`);
+          }
+          if (card.rowCapHit) parts.push("row cap hit — truncated by the server");
+          if (card.callsSummary) parts.push(card.callsSummary);
+          if (card.item.dataset.isFollowUp === "true") parts.push("follow-up evidence");
+          card.meta.textContent = parts.join(" · ");
+        }
+
+        function renderRows(card, rows, sql) {
+          const body = card.rows.body;
+          body.replaceChildren();
+          if (!Array.isArray(rows)) {
+            // A record with no rows at all (the analysis failed before any
+            // query ran): claim no row count rather than "0 rows".
+            body.append(make("p", "muted", "No result rows were recorded for this analysis."));
+            card.rowCount = null;
+            card.rowCapHit = false;
+            updateMeta(card);
+            return;
+          }
+          const list = rows;
+          card.rowCount = list.length;
+          if (!list.length) {
+            body.append(make("p", "muted", "The query returned no rows."));
+            card.rowCapHit = false;
+            updateMeta(card);
+            return;
+          }
+          const columns = [];
+          list.forEach((row) => {
+            Object.keys(row || {}).forEach((column) => {
+              if (!columns.includes(column)) columns.push(column);
+            });
+          });
+          const shown = list.slice(0, ROW_PREVIEW_LIMIT);
+          const table = make("table", "rows-table");
+          const head = document.createElement("thead");
+          const headRow = document.createElement("tr");
+          columns.forEach((column) => headRow.append(make("th", "", column)));
+          head.append(headRow);
+          const tbody = document.createElement("tbody");
+          shown.forEach((row) => {
+            const tr = document.createElement("tr");
+            columns.forEach((column) => tr.append(make("td", "", formatCell(row ? row[column] : null))));
+            tbody.append(tr);
+          });
+          table.append(head, tbody);
+          const scroller = make("div", "rows-scroll");
+          scroller.append(table);
+          body.append(scroller);
+
+          const notes = [];
+          if (list.length > shown.length) {
+            notes.push(`Showing the first ${shown.length} of ${list.length} rows.`);
+          }
+          const cap = rowCapFromSql(sql);
+          card.rowCapHit = cap !== null && list.length >= cap;
+          if (card.rowCapHit) {
+            notes.push(
+              `Row cap reached: the executed query carries LIMIT ${cap} and the server returned ` +
+                `${list.length} rows, so this result was truncated. Refine the question to see the rest.`,
+            );
+          }
+          if (notes.length) body.append(make("p", "rows-note", notes.join(" ")));
+          updateMeta(card);
+        }
+
+        // One place that fills a card from either a live ``analysis_finished``
+        // event (no rows: they travel only with the final payload) or a final
+        // evidence record (rows, call counts, status). Both go through the same
+        // key, so a card is created once and enriched — never duplicated.
+        function applyRecord(record) {
+          const card = ensureCard(record.index, record.question, Boolean(record.isFollowUp));
+          if (!card) return;
+          if (typeof record.question === "string" && record.question.trim()) {
+            card.questionNode.textContent = record.question;
+          }
+          if (record.sql) {
+            card.sqlText = record.sql;
+            card.sql.body.textContent = record.sql;
+            show(card.sql.node, true);
+          }
+          if (record.rowsAvailable) {
+            renderRows(card, record.rows, card.sqlText);
+            const answer = typeof record.answer === "string" && record.answer.trim() ? record.answer : "";
+            card.answer.body.textContent = answer || "(no answer was recorded for this analysis)";
+            show(card.answer.node, true);
+          } else if (Number.isInteger(record.rowCount)) {
+            card.rowCount = record.rowCount;
+            if (!card.rows.body.childElementCount) {
+              card.rows.body.append(
+                make("p", "muted", `${record.rowCount} row(s) — the rows themselves arrive with the final payload.`),
+              );
+            }
+          }
+          if (record.error) {
+            card.error.body.textContent = record.error;
+            show(card.error.node, true);
+          }
+          if (record.toolCalls && Object.keys(record.toolCalls).length) {
+            card.callsSummary = callsText(record.toolCalls);
+            card.calls.textContent = card.callsSummary;
+          }
+          const failed = Boolean(record.error) || record.status === "failed";
+          card.item.dataset.state = failed ? "failed" : "completed";
+          card.stateChip.textContent = failed ? "failed" : "done";
+          updateMeta(card);
+        }
+
+        function onAnalysisStarted(data) {
+          if (!isIndex(data.index)) return;
+          const card = ensureCard(data.index, data.question, Boolean(data.is_follow_up));
+          if (!card) return;
+          show(pipeline, true);
+          card.item.dataset.state = "running";
+          card.stateChip.textContent = "running";
+          const position = data.is_follow_up ? "follow-up analysis" : "analysis";
+          setStatus(`Running — ${position} #${data.index} started.`, "running");
+        }
+
+        function onAnalysisFinished(data) {
+          applyRecord({
+            index: data.index,
+            question: data.question,
+            isFollowUp: data.is_follow_up,
+            sql: data.sql || null,
+            rowsAvailable: false,
+            rowCount: Number.isInteger(data.row_count) ? data.row_count : null,
+            answer: data.answer,
+            error: data.error,
+          });
+          if (data.error) {
+            setStatus(`Analysis #${data.index} finished with an error; the run continues.`, "warn");
+          }
+        }
+
+        function applyEvidenceRecord(record) {
+          if (!record || typeof record !== "object") return;
+          applyRecord({
+            index: record.sub_index,
+            question: record.sub_question,
+            isFollowUp: record.is_follow_up,
+            sql: record.sql || null,
+            rowsAvailable: true,
+            rows: record.rows,
+            answer: record.answer,
+            error: record.error,
+            toolCalls: record.tool_calls,
+            status: record.status,
+          });
+        }
+
+        // ---- analyst stages (nested, index-stamped) --------------------
+        function onMetadataRetrieved(data) {
+          const card = cardFor(data);
+          if (!card) {
+            setStatus("Running — retrieving metadata.", "running");
+            return;
+          }
+          stage(
+            card,
+            "metadata",
+            "metadata retrieved",
+            data.attempt,
+            data.reason ? `degraded: ${data.reason}` : null,
+            data.reason ? "warn" : "ok",
+          );
+        }
+
+        function onSqlGenerated(data) {
+          const card = cardFor(data);
+          if (!card) {
+            setStatus("Running — generating SQL.", "running");
+            return;
+          }
+          stage(card, "generate", "SQL generated", data.attempt, truncate(data.sql, 120));
+        }
+
+        function onSqlValidated(data) {
+          const card = cardFor(data);
+          if (!card) {
+            setStatus("Running — validating SQL.", "running");
+            return;
+          }
+          stage(card, "validate", "SQL validated (read-only, bounded)", data.attempt, truncate(data.sql, 120));
+        }
+
+        function onSqlExecuted(data) {
+          const card = cardFor(data);
+          if (!card) {
+            setStatus("Running — executing the query.", "running");
+            return;
+          }
+          const count = Number.isInteger(data.row_count) ? `${data.row_count} row(s)` : "";
+          stage(card, "execute", "query executed", data.attempt, count);
+          if (Number.isInteger(data.row_count)) {
+            card.rowCount = data.row_count;
+            updateMeta(card);
+          }
+        }
+
+        function onAnalysisCompleted(data) {
+          const card = cardFor(data);
+          if (!card) {
+            setStatus("Running — analysing the results.", "running");
+            return;
+          }
+          stage(card, "completed", "answer ready", data.attempt, truncate(data.answer, 100), "ok");
+        }
+
+        function onRunRetrying(data) {
+          const card = cardFor(data);
+          const attempt = Number.isInteger(data.attempt) ? data.attempt : null;
+          const reason = data.reason || "the previous attempt was rejected";
+          if (card) {
+            stage(card, "retry", "retrying", attempt, reason, "warn");
+            return;
+          }
+          setStatus(`Retrying${attempt ? ` (attempt ${attempt + 1})` : ""}: ${reason}`, "warn");
+          pushNote(`Retrying${attempt ? ` after attempt ${attempt}` : ""}: ${reason}`, "warn");
+        }
+
+        function onRunCompleted(data) {
+          if (isIndex(data.index)) {
+            const card = cards.get(data.index);
+            if (card) stage(card, "finished", "analysis complete", data.attempt, null, "ok");
+            return;
+          }
+          setStatus(
+            data.report ? "Completed — the grounded report is below." : "Finished.",
+            data.status === "failed" ? "failed" : "completed",
+          );
+        }
+
+        function onRunFailed(data) {
+          const reason = data.reason || data.error || "no reason was reported";
+          if (isIndex(data.index)) {
+            const card = ensureCard(data.index, data.question, Boolean(data.is_follow_up));
+            if (card) {
+              stage(card, "failed", "analysis failed", data.attempt, reason, "bad");
+              card.item.dataset.state = "failed";
+              card.stateChip.textContent = "failed";
+              card.error.body.textContent = reason;
+              show(card.error.node, true);
+            }
+            return;
+          }
+          setStatus(`The run failed: ${reason}`, "failed");
+        }
+
+        // ---- inspect, synthesis, groundedness --------------------------
+        function onInspected(data) {
+          const questions = Array.isArray(data.questions) ? data.questions : [];
+          const status = data.status || (questions.length ? "follow_ups" : "none");
+          inspectQuestions.replaceChildren();
+          show(inspectPanel, true);
+          if (status === "degraded") {
+            inspectVerdict.dataset.state = "warn";
+            inspectVerdict.textContent =
+              "Degraded — no follow-up round was run. The sub-analysis evidence is still complete " +
+              "and the report is built from it.";
+            inspectVerdict.append(make("span", "muted", data.reason ? ` Reason: ${data.reason}` : ""));
+            setStatus("Running — the inspect stage degraded; continuing to synthesis.", "warn");
+            return;
+          }
+          if (questions.length) {
+            inspectVerdict.dataset.state = "ok";
+            inspectVerdict.textContent = `Follow-ups requested (${questions.length}):`;
+            questions.forEach((question) => inspectQuestions.append(make("li", "", question)));
+            setStatus(`Running — ${questions.length} follow-up question(s) requested.`, "running");
+            return;
+          }
+          inspectVerdict.dataset.state = "ok";
+          inspectVerdict.textContent =
+            "No follow-up questions were requested — the initial evidence was sufficient.";
+          setStatus("Running — no follow-ups; synthesising the report.", "running");
+        }
+
+        function onSynthesisStarted(data) {
+          show(synthesisPanel, true);
+          synthesisStatus.dataset.state = "running";
+          synthesisStatus.textContent =
+            "Synthesising the report from the accumulated evidence" +
+            (Number.isInteger(data.attempt) ? ` (attempt ${data.attempt})…` : "…");
+          setStatus("Running — synthesising the grounded report.", "running");
+        }
+
+        function onGroundedness(data) {
+          show(verdictPanel, true);
+          verdictReason.textContent = "";
+          if (data.status === "grounded") {
+            verdictLine.dataset.state = "ok";
+            verdictLine.textContent =
+              "Grounded — every number in the report traces to an executed read-only query.";
+            synthesisStatus.dataset.state = "ok";
+            return;
+          }
+          if (data.status === "violated") {
+            verdictLine.dataset.state = "bad";
+            verdictLine.textContent =
+              "Violated — the report was rejected and will not be shown as the answer.";
+            verdictReason.textContent = data.reason ? `Reason: ${data.reason}` : "";
+            synthesisStatus.dataset.state = "bad";
+            synthesisStatus.textContent = "The report failed the groundedness check and was rejected.";
+            setStatus("Groundedness violation — the report was rejected.", "failed");
+            return;
+          }
+          verdictLine.dataset.state = "warn";
+          verdictLine.textContent = `Verdict: ${data.status || "unknown"}`;
+          verdictReason.textContent = data.reason || "";
+        }
+
+        // Spec R8 (ticket 08) describes an explicit queued event when the
+        // process is at its concurrency cap; both spellings are handled so the
+        // page keeps working when that lands.
+        function onQueued(data) {
+          show(pipeline, true);
+          const position = Number.isInteger(data.position) ? ` (position ${data.position + 1})` : "";
+          setStatus(`Queued${position} — waiting for a free run slot.`, "queued");
+          pushNote(`Queued${position}: the run starts as soon as a slot frees.`, "warn");
+        }
+
+        // Every event type ``app.progress.ProgressEventType`` defines, plus the
+        // queued event spec R8 describes. A type this page does not know is
+        // ignored on purpose: the stream keeps flowing and the raw log still
+        // records it.
+        const handlers = {
+          "run.started": onRunStarted,
+          "run.completed": onRunCompleted,
+          "run.failed": onRunFailed,
+          "run.retrying": onRunRetrying,
+          "run.queued": onQueued,
+          "queued": onQueued,
+          "metadata.retrieved": onMetadataRetrieved,
+          "sql.generated": onSqlGenerated,
+          "sql.validated": onSqlValidated,
+          "sql.executed": onSqlExecuted,
+          "analysis.completed": onAnalysisCompleted,
+          "manager.requested": onRequestAccepted,
+          "manager.decomposed": onDecomposed,
+          "manager.analysis_started": onAnalysisStarted,
+          "manager.analysis_finished": onAnalysisFinished,
+          "manager.inspected": onInspected,
+          "manager.synthesis_started": onSynthesisStarted,
+          "manager.groundedness": onGroundedness,
+        };
+
+        // ---- raw event log (plain renderer) ----------------------------
         function summarize(data) {
           const parts = [];
           if (data.index !== undefined) {
@@ -213,73 +994,147 @@
           if (data.attempt !== undefined) parts.push(`attempt ${data.attempt}`);
           if (data.status) parts.push(`status ${data.status}`);
           if (data.row_count !== undefined) parts.push(`${data.row_count} row(s)`);
+          if (data.questions) parts.push(`${data.questions.length} question(s)`);
           if (data.reason) parts.push(data.reason);
           if (data.error) parts.push(`error: ${data.error}`);
           return parts.join(" · ");
         }
 
         function appendEvent(data) {
-          const row = document.createElement("li");
-          row.className = "event";
+          const row = make("li", "event");
           row.dataset.eventType = data.type;
           if (data.seq !== undefined) row.dataset.seq = String(data.seq);
           if (data.index !== undefined) row.dataset.index = String(data.index);
           if (data.is_follow_up !== undefined) {
             row.dataset.isFollowUp = String(data.is_follow_up);
           }
-          const type = document.createElement("span");
-          type.className = "event-type";
-          type.textContent = data.type;
-          const detail = document.createElement("span");
-          detail.className = "event-detail";
-          detail.textContent = summarize(data);
+          const type = make("span", "event-type", data.type);
+          const detail = make("span", "event-detail", summarize(data));
           row.append(type, detail);
           eventsList.append(row);
+          show(logPanel, true);
           row.scrollIntoView({ block: "nearest" });
         }
 
-        function callTotals(toolCalls) {
+        function handleProgress(data) {
+          appendEvent(data);
+          const handler = handlers[data.type];
+          if (typeof handler === "function") handler(data);
+        }
+
+        // ---- final payload ---------------------------------------------
+        function renderToolCalls(toolCalls, total) {
+          toolCallBreakdown.replaceChildren();
           const entries = Object.entries(toolCalls || {}).sort((a, b) => b[1] - a[1]);
-          const total = entries.reduce((sum, entry) => sum + entry[1], 0);
-          if (!entries.length) return String(total);
-          return `${total} (${entries.map(([name, count]) => `${name} ${count}`).join(", ")})`;
+          entries.forEach(([name, count]) => {
+            const item = make("li");
+            item.append(make("span", "tool-name", name));
+            item.append(make("span", "tool-count", count));
+            toolCallBreakdown.append(item);
+          });
+          const resolved = Number.isInteger(total) ? total : callTotal(toolCalls);
+          finalToolCalls.textContent = `${resolved} call${resolved === 1 ? "" : "s"}`;
+        }
+
+        function markUnfinishedCards(label) {
+          cards.forEach((card) => {
+            if (card.item.dataset.state === "running" || card.item.dataset.state === "queued") {
+              card.item.dataset.state = "unfinished";
+              card.stateChip.textContent = label;
+            }
+          });
         }
 
         function showFinal(data) {
-          result.hidden = false;
+          sawTerminal = true;
+          show(result, true);
+          show(pipeline, true);
           finalStatus.textContent = data.status || "unknown";
+          finalStatus.dataset.state = data.status === "completed" ? "ok" : "bad";
           finalElapsed.textContent = seconds(data.elapsed_seconds);
-          finalToolCalls.textContent = callTotals(data.tool_calls);
-          reportBox.textContent = data.report || "";
+          renderToolCalls(data.tool_calls, data.tool_call_total);
+
+          // Fallbacks for a stream whose live events were missed (a reconnect,
+          // or a runner that emitted nothing): the final payload is complete.
+          if (!subQuestionsList.childElementCount && Array.isArray(data.sub_questions)) {
+            if (data.sub_questions.length) {
+              onDecomposed({ questions: data.sub_questions });
+            }
+          }
+          if (inspectPanel.hidden && Array.isArray(data.follow_up_questions)) {
+            onInspected({
+              status: data.follow_up_questions.length ? "follow_ups" : "none",
+              questions: data.follow_up_questions,
+            });
+          }
+          // Rows arrive only here: this is what backfills the live cards.
+          (Array.isArray(data.evidence) ? data.evidence : []).forEach(applyEvidenceRecord);
+          markUnfinishedCards("unfinished");
+          const report = typeof data.report === "string" ? data.report.trim() : "";
+          reportBox.textContent = report;
+          show(reportSection, Boolean(report));
+
+          // A rejected attempt is presented as rejected, never as the report.
+          const attempt = typeof data.report_attempt === "string" ? data.report_attempt.trim() : "";
+          const showRejected = Boolean(attempt) && !report;
+          rejectedReport.textContent = showRejected ? attempt : "";
+          show(rejected, showRejected);
+          if (showRejected && data.error) {
+            document.getElementById("rejected-note").textContent =
+              `This text failed the groundedness check (${data.error}) and is not the run's report. ` +
+              "No number in it should be trusted.";
+          }
+
           if (data.error) {
             finalError.textContent = data.error;
-            finalError.hidden = false;
+            show(finalError, true);
           }
           if (data.status === "completed") {
             setStatus(`Completed in ${seconds(data.elapsed_seconds)}.`, "completed");
           } else {
-            setStatus(`Finished with status ${data.status || "unknown"}.`, "failed");
+            const suffix = data.error ? `: ${data.error}` : "";
+            setStatus(`Finished with status ${data.status || "unknown"}${suffix}`, "failed");
           }
         }
 
         function showFailed(data) {
-          result.hidden = false;
+          sawTerminal = true;
+          show(result, true);
           finalStatus.textContent = "failed";
+          finalStatus.dataset.state = "bad";
           finalElapsed.textContent = seconds(data.elapsed_seconds);
-          finalToolCalls.textContent = callTotals(data.tool_calls);
-          finalError.textContent = data.error || "the run failed";
-          finalError.hidden = false;
+          renderToolCalls(data.tool_calls, data.tool_call_total);
           reportBox.textContent = "";
+          show(reportSection, false);
+          show(rejected, false);
+          finalError.textContent = data.error || "the run failed";
+          show(finalError, true);
+          markUnfinishedCards("unfinished");
           setStatus(`Failed: ${data.error || "the run failed"}`, "failed");
         }
 
-        function handleFrame(name, payload) {
-          if (name === "progress") appendEvent(payload);
-          else if (name === "final") showFinal(payload);
-          else if (name === "failed") showFailed(payload);
+        function showTruncatedStream() {
+          show(result, true);
+          show(pipeline, true);
+          finalStatus.textContent = "unknown";
+          finalStatus.dataset.state = "bad";
+          finalError.textContent =
+            "The stream ended without a terminal frame (no final or failed frame arrived), so the " +
+            "run's outcome is unknown. What is rendered above is everything the server sent.";
+          show(finalError, true);
+          markUnfinishedCards("unfinished");
+          setStatus("The stream ended without a terminal frame — the outcome is unknown.", "failed");
         }
 
-        // SSE framing: fields are separated by CRLF, frames by a blank line.
+        function handleFrame(name, payload) {
+          if (!payload || typeof payload !== "object") return;
+          if (name === "progress") handleProgress(payload);
+          else if (name === "final") showFinal(payload);
+          else if (name === "failed") showFailed(payload);
+          // Any other frame name is ignored: a newer server may add frames.
+        }
+
+        // ---- SSE framing -----------------------------------------------
         function takeFrame(buffer) {
           const separator = buffer.match(/\r?\n\r?\n/);
           if (!separator) return null;
@@ -301,7 +1156,11 @@
             else if (field === "data") data.push(value);
           }
           if (!data.length) return null;
-          return { name, payload: JSON.parse(data.join("\n")) };
+          try {
+            return { name, payload: JSON.parse(data.join("\n")) };
+          } catch (_) {
+            return null;
+          }
         }
 
         async function readStream(response) {
@@ -318,6 +1177,54 @@
               if (parsed) handleFrame(parsed.name, parsed.payload);
             }
           }
+          // A trailing frame without its blank-line terminator still counts.
+          const rest = parseFrame(buffer);
+          if (rest) handleFrame(rest.name, rest.payload);
+        }
+
+        // A fresh page (or a re-submitted request) starts from nothing: no run
+        // history is kept anywhere.
+        function reset() {
+          cards.clear();
+          followUpDividerShown = false;
+          sawTerminal = false;
+          subQuestionsList.replaceChildren();
+          cardsList.replaceChildren();
+          notesList.replaceChildren();
+          eventsList.replaceChildren();
+          inspectQuestions.replaceChildren();
+          toolCallBreakdown.replaceChildren();
+          reportBox.textContent = "";
+          rejectedReport.textContent = "";
+          finalError.textContent = "";
+          finalStatus.textContent = "";
+          finalElapsed.textContent = "";
+          finalToolCalls.textContent = "";
+          requestText.textContent = "";
+          decompositionNote.textContent = "";
+          inspectVerdict.textContent = "";
+          inspectVerdict.dataset.state = "";
+          synthesisStatus.textContent = "";
+          synthesisStatus.dataset.state = "";
+          verdictLine.textContent = "";
+          verdictLine.dataset.state = "";
+          verdictReason.textContent = "";
+          [
+            pipeline,
+            requestPanel,
+            decompositionPanel,
+            inspectPanel,
+            synthesisPanel,
+            verdictPanel,
+            notesList,
+            logPanel,
+            result,
+            finalError,
+            rejected,
+            reportSection,
+          ].forEach((node) => show(node, false));
+          show(analysesNote, true);
+          setStatus("Not started.", "idle");
         }
 
         async function errorMessage(response) {
@@ -336,14 +1243,14 @@
 
           reset();
           submit.disabled = true;
-          setStatus("Running…", "running");
+          setStatus("Running — accepting the request.", "running");
           try {
             const headers = {
               "Content-Type": "application/json",
               Accept: "text/event-stream",
             };
             if (token) headers["X-Web-Token"] = token;
-            const response = await fetch(endpoint, {
+            const response = await fetch(ENDPOINT, {
               method: "POST",
               headers,
               body: JSON.stringify({
@@ -353,6 +1260,7 @@
             });
             if (!response.ok) throw new Error(await errorMessage(response));
             await readStream(response);
+            if (!sawTerminal) showTruncatedStream();
           } catch (error) {
             showFailed({ status: "failed", error: error.message });
           } finally {
