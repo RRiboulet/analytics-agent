@@ -6,8 +6,9 @@ contention experiment:
 * the asyncpg pool size comes from settings (``DB_POOL_MAX_SIZE``), not a
   literal, so concurrent sessions do not queue on five connections;
 * metadata search's synchronous fastembed inference runs in a worker thread
-  under an ``asyncio`` lock, so a slow embedding neither stalls the server's
-  event loop nor races the model instance.
+  under a per-instance ``threading.Lock`` taken *inside* that thread, so a slow
+  embedding neither stalls the server's event loop, races the model instance,
+  nor loses its guard when the awaiting task is cancelled.
 
 Everything here is hermetic: no database, network or model is touched.
 """
@@ -26,6 +27,7 @@ from app.config import Settings, get_settings
 from app.data_sources.postgres import PostgresClient
 from app.embedder import MetadataEmbedder
 from app.tools.search_metadata import register as register_search_metadata
+from scripts import seed_metadata
 
 
 class FakeMCP:
@@ -85,6 +87,10 @@ async def test_client_connects_with_the_configured_pool_size(
 
 
 async def test_client_defaults_to_the_setting_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Environment-independent: the tracer import loads the repo's .env into
+    # os.environ, so an exported DB_POOL_MAX_SIZE would otherwise redefine the
+    # "default" this test is about.
+    monkeypatch.delenv("DB_POOL_MAX_SIZE", raising=False)
     recorded: dict[str, Any] = {}
 
     async def fake_create_pool(**kwargs: Any) -> object:
@@ -93,10 +99,14 @@ async def test_client_defaults_to_the_setting_default(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr("app.data_sources.postgres.asyncpg.create_pool", fake_create_pool)
 
+    default = Settings(_env_file=None).db_pool_max_size
     client = PostgresClient("postgresql://unused", 1.0, 100)
     await client.connect()
 
-    assert recorded["max_size"] == Settings(_env_file=None).db_pool_max_size
+    # Compare the numbers and report them, not two Settings() reprs.
+    assert recorded["max_size"] == default, (
+        f"client default {recorded['max_size']} != settings default {default}"
+    )
 
 
 def test_asgi_app_sizes_the_pool_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -122,6 +132,57 @@ def test_asgi_app_sizes_the_pool_from_settings(monkeypatch: pytest.MonkeyPatch) 
     assert captured["pool_max_size"] == 7
 
 
+async def test_seeding_script_uses_the_configured_pool_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lowered DB_POOL_MAX_SIZE is honored by the admin seeding client too."""
+    captured: dict[str, Any] = {}
+
+    class RecordingClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        async def connect(self) -> None:
+            return None
+
+        async def ensure_metadata_schema(self) -> None:
+            return None
+
+        async def replace_metadata_documents(self, documents: list[dict[str, Any]]) -> int:
+            return len(documents)
+
+        async def close(self) -> None:
+            return None
+
+    async def fake_documents(client: Any) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": "table:orders",
+                "entity_type": "table",
+                "entity_id": "table:orders",
+                "title": "orders",
+                "content": "orders",
+                "doc_metadata": {},
+            }
+        ]
+
+    class FakeEmbedder:
+        def embed_query(self, text: str) -> list[float]:
+            return [0.0] * 384
+
+    monkeypatch.setenv("DB_POOL_MAX_SIZE", "2")
+    monkeypatch.setattr(seed_metadata, "PostgresClient", RecordingClient)
+    monkeypatch.setattr(seed_metadata, "build_metadata_documents", fake_documents)
+    monkeypatch.setattr(seed_metadata, "get_embedder", lambda: FakeEmbedder())
+    get_settings.cache_clear()
+    try:
+        await seed_metadata._main()
+    finally:
+        get_settings.cache_clear()
+
+    assert captured["pool_max_size"] == 2
+
+
 # ---------------------------------------------------------------------------
 # Embedding off the event loop
 # ---------------------------------------------------------------------------
@@ -131,6 +192,7 @@ class _SlowEmbedder(MetadataEmbedder):
     """Blocking stub embedder: sleeps like ONNX inference would compute."""
 
     def __init__(self, delay: float) -> None:
+        self._embed_lock = threading.Lock()
         self.delay = delay
         self.calls: list[str] = []
         self.thread_id: int | None = None
@@ -171,6 +233,7 @@ class _OverlapRecordingEmbedder(MetadataEmbedder):
     """Stub embedder that records how many inferences run at the same time."""
 
     def __init__(self) -> None:
+        self._embed_lock = threading.Lock()
         self._guard = threading.Lock()
         self.active = 0
         self.max_active = 0
@@ -229,7 +292,7 @@ async def test_concurrent_metadata_searches_mask_embedding_errors() -> None:
 
     class _BrokenEmbedder(MetadataEmbedder):
         def __init__(self) -> None:
-            pass
+            self._embed_lock = threading.Lock()
 
         def embed_query(self, text: str) -> list[float]:
             raise RuntimeError("model crashed")
@@ -243,3 +306,67 @@ async def test_concurrent_metadata_searches_mask_embedding_errors() -> None:
         assert result.structuredContent["valid"] is False
         assert result.structuredContent["message"] == "The database is temporarily unavailable."
     assert client.limits == []
+
+
+class _GatedEmbedder(MetadataEmbedder):
+    """Stub embedder whose inference blocks until the test opens the gate.
+
+    The blocking happens *inside* ``embed_query``, exactly where ONNX inference
+    would be, so this measures whether the guard is held for the whole call.
+    """
+
+    def __init__(self) -> None:
+        self._embed_lock = threading.Lock()
+        self._guard = threading.Lock()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.active = 0
+        self.max_active = 0
+
+    def embed_query(self, text: str) -> list[float]:
+        with self._guard:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        self.entered.set()
+        try:
+            # Stands in for the ONNX call: the worker sits here until released.
+            if not self.release.wait(timeout=5):
+                raise RuntimeError("the test never opened the gate")
+            return [float(len(text))]
+        finally:
+            with self._guard:
+                self.active -= 1
+
+
+async def test_cancelled_embedding_keeps_the_guard_until_the_worker_returns() -> None:
+    """Cancelling the await must not let a second search into the model.
+
+    The coroutine is cancelled while the worker thread is still inside the
+    inference call. An ``asyncio`` lock would be released by that cancellation
+    and the second search would enter concurrently; a threading.Lock taken in
+    the worker cannot be, so entry stays serialized.
+    """
+    embedder = _GatedEmbedder()
+
+    first = asyncio.create_task(embedder.embed_query_async("revenue"))
+    for _ in range(200):
+        if embedder.entered.is_set():
+            break
+        await asyncio.sleep(0.01)
+    assert embedder.entered.is_set(), "the first inference never started"
+
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    # The first call is still inside the model; the second must wait for it.
+    second = asyncio.create_task(embedder.embed_query_async("late deliveries"))
+    for _ in range(10):
+        await asyncio.sleep(0.01)
+    assert second.done() is False
+    assert embedder.max_active == 1
+
+    embedder.release.set()
+    assert await asyncio.wait_for(second, timeout=5) == [float(len("late deliveries"))]
+    # The freed worker finished, and only then did the second one run.
+    assert embedder.max_active == 1

@@ -7,6 +7,7 @@ reproduce the same vectors without external services.
 """
 
 import asyncio
+import threading
 from functools import lru_cache
 from typing import Any
 
@@ -17,13 +18,13 @@ from app.config import get_settings
 
 
 class MetadataEmbedder:
-    """Stateless wrapper that encodes texts/queries into fixed-size vectors."""
+    """Wrapper that encodes texts/queries into fixed-size vectors.
 
-    # Serializes the worker-thread embedding call. Created lazily on first
-    # async use (never in __init__) so the process-wide embedder built at
-    # import time carries no loop-bound state, and so subclasses that skip
-    # __init__ (the test stubs below) still work.
-    _embed_lock: asyncio.Lock | None = None
+    Per-instance state is the loaded model (``TextEmbedding``, one ONNX session
+    with its own thread pool) and ``_embed_lock``, the guard that serializes
+    inference on it: the model is not safe to run from two threads at once, so
+    concurrent metadata searches must take the guard.
+    """
 
     def __init__(self, model_name: str, cache_dir: str | None = None, threads: int | None = None):
         self._model = TextEmbedding(
@@ -31,6 +32,12 @@ class MetadataEmbedder:
             cache_dir=cache_dir,
             threads=threads,
         )
+        # A threading.Lock, deliberately: it is acquired *inside* the worker
+        # thread, so cancelling the awaiting coroutine cannot release it while
+        # ONNX is still running. An asyncio.Lock would be released by that
+        # cancellation (letting a second search race the model), and it binds
+        # itself to the first event loop that contends it.
+        self._embed_lock = threading.Lock()
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts. Returns a list of float vectors."""
@@ -42,21 +49,20 @@ class MetadataEmbedder:
         (vector,) = self.embed([text])
         return vector
 
-    def _lock(self) -> asyncio.Lock:
-        """Return this instance's embedding lock, creating it on first use."""
-        if self._embed_lock is None:
-            self._embed_lock = asyncio.Lock()
-        return self._embed_lock
+    def _embed_query_serialized(self, text: str) -> list[float]:
+        """Worker-thread body: hold the guard for the whole inference call."""
+        with self._embed_lock:
+            return self.embed_query(text)
 
     async def embed_query_async(self, text: str) -> list[float]:
         """Embed one query without blocking the server's event loop.
 
         fastembed's ONNX inference is synchronous CPU work, so it runs in a
-        worker thread. The lock keeps that serialized: concurrent metadata
-        searches must not race the single model instance.
+        worker thread. The guard is taken there, not around the await, so
+        concurrent metadata searches are serialized for as long as inference
+        actually runs — including after the awaiting task is cancelled.
         """
-        async with self._lock():
-            return await asyncio.to_thread(self.embed_query, text)
+        return await asyncio.to_thread(self._embed_query_serialized, text)
 
 
 @lru_cache(maxsize=1)
@@ -74,7 +80,9 @@ def create_test_embedder(vectors: list[list[float]]) -> "MetadataEmbedder":
 
     class _StubEmbedder(MetadataEmbedder):
         def __init__(self, *_: Any, **__: Any) -> None:
-            pass
+            # Skips the ONNX model load but keeps the remaining per-instance
+            # state, so the real serialization path is still exercised.
+            self._embed_lock = threading.Lock()
 
         def embed(self, texts: list[str]) -> list[list[float]]:
             return [vectors[0]] * len(texts)
