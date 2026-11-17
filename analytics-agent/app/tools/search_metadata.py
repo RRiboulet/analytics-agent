@@ -47,7 +47,7 @@ def register(mcp: FastMCP, client: PostgresClient, embedder: MetadataEmbedder) -
             return _result(False, "top_k must be between 1 and 50.", [])
 
         try:
-            query_vector = embedder.embed_query(question)
+            query_vector = await embedder.embed_query_async(question)
             hits = await client.search_metadata(query_vector, limit)
         except Exception:
             return _result(False, "The database is temporarily unavailable.", [])

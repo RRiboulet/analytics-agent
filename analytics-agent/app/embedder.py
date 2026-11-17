@@ -6,6 +6,7 @@ is bundled and cached in a deterministic directory so a fresh environment can
 reproduce the same vectors without external services.
 """
 
+import asyncio
 from functools import lru_cache
 from typing import Any
 
@@ -17,6 +18,12 @@ from app.config import get_settings
 
 class MetadataEmbedder:
     """Stateless wrapper that encodes texts/queries into fixed-size vectors."""
+
+    # Serializes the worker-thread embedding call. Created lazily on first
+    # async use (never in __init__) so the process-wide embedder built at
+    # import time carries no loop-bound state, and so subclasses that skip
+    # __init__ (the test stubs below) still work.
+    _embed_lock: asyncio.Lock | None = None
 
     def __init__(self, model_name: str, cache_dir: str | None = None, threads: int | None = None):
         self._model = TextEmbedding(
@@ -34,6 +41,22 @@ class MetadataEmbedder:
         """Embed a single query/question."""
         (vector,) = self.embed([text])
         return vector
+
+    def _lock(self) -> asyncio.Lock:
+        """Return this instance's embedding lock, creating it on first use."""
+        if self._embed_lock is None:
+            self._embed_lock = asyncio.Lock()
+        return self._embed_lock
+
+    async def embed_query_async(self, text: str) -> list[float]:
+        """Embed one query without blocking the server's event loop.
+
+        fastembed's ONNX inference is synchronous CPU work, so it runs in a
+        worker thread. The lock keeps that serialized: concurrent metadata
+        searches must not race the single model instance.
+        """
+        async with self._lock():
+            return await asyncio.to_thread(self.embed_query, text)
 
 
 @lru_cache(maxsize=1)
