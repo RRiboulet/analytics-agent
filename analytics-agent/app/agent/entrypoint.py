@@ -14,11 +14,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.agent.capabilities import MCPCapabilities
-from app.agent.graph import AgentServices, build_graph
+from app.agent.graph import AgentServices, build_graph, failure_reason
 from app.agent.llm import create_llm
 from app.agent.state import AgentState
 from app.agent.tracing import AgentTracer
 from app.config import get_settings
+from app.progress import ProgressSink
 
 
 @dataclass
@@ -41,9 +42,14 @@ async def _run_question(
     max_attempts: int,
     max_rows: int,
     tracer: AgentTracer | None,
+    sink: ProgressSink | None = None,
 ) -> AgentState:
     services = AgentServices(
-        llm=llm, capabilities=capabilities, max_attempts=max_attempts, max_rows=max_rows
+        llm=llm,
+        capabilities=capabilities,
+        max_attempts=max_attempts,
+        max_rows=max_rows,
+        sink=sink,
     )
     graph = build_graph(services)
     # Fail-open observability: with Langfuse credentials the whole run is
@@ -55,8 +61,13 @@ async def _run_question(
     )
 
 
-async def run_agent(question: str) -> RunResult:
-    """Run the analytics agent end-to-end and return a concise result."""
+async def run_agent(question: str, *, sink: ProgressSink | None = None) -> RunResult:
+    """Run the analytics agent end-to-end and return a concise result.
+
+    ``sink`` is the optional progress channel: when supplied the run emits its
+    stage transitions, retries and terminal outcome through it, fail-open. With
+    no sink the run is exactly what it was before (no emission, no cost).
+    """
     settings = get_settings()
     llm = create_llm()
     capabilities = MCPCapabilities()
@@ -69,6 +80,7 @@ async def run_agent(question: str) -> RunResult:
             max_attempts=settings.agent_max_attempts,
             max_rows=settings.max_rows,
             tracer=tracer,
+            sink=sink,
         )
     finally:
         await capabilities.close()
@@ -80,19 +92,9 @@ async def run_agent(question: str) -> RunResult:
         sql=state.get("bounded_sql") or state.get("sql"),
         attempts=state.get("attempts", 0),
         state=state,
-        error=(
-            state.get("llm_error")
-            or state.get("query_error")
-            or state.get("validation_error")
-            # Retrieval errors only fail the run when the schema itself is
-            # unavailable; a degraded search_metadata failure on a completed
-            # run is visible in the trace but is not an error for the caller.
-            or (
-                (state.get("retrieval_errors") or [None])[0]
-                if state.get("schema_unavailable")
-                else None
-            )
-        ),
+        # A successful run is never an error: this is the same reason the
+        # failure event carries, so the caller and the live view agree.
+        error=failure_reason(state),
     )
 
 

@@ -20,6 +20,7 @@ from langgraph.graph import END, START, StateGraph
 from app.agent.capabilities import Capabilities
 from app.agent.llm import LLM, LLMError
 from app.agent.state import AgentState, AgentStatus
+from app.progress import ProgressEmitter, ProgressEventType, ProgressSink
 from app.sql_safety import UnsafeQueryError, validate_and_bound_query
 
 # Node identifiers.
@@ -47,6 +48,27 @@ class AgentServices:
     capabilities: Capabilities
     max_attempts: int = 3
     max_rows: int = 100
+    # Optional progress sink (PLAN M8). Absent by default, so every existing
+    # caller — CLI, library, tests — runs with no emission and no cost.
+    sink: ProgressSink | None = None
+
+
+def failure_reason(state: AgentState) -> str | None:
+    """Why the run failed, or ``None`` when nothing failed.
+
+    The caller-facing error of a run: a model, validation or execution
+    failure, or a retrieval failure only when the schema itself was
+    unavailable. A ``search_metadata`` failure alone degrades the run (it
+    still completes from the schema) and is not an error.
+    """
+    reason = state.get("llm_error") or state.get("query_error") or state.get("validation_error")
+    if reason:
+        return reason
+    if state.get("schema_unavailable"):
+        retrieval_errors = state.get("retrieval_errors") or []
+        if retrieval_errors:
+            return retrieval_errors[0]
+    return None
 
 
 def _table_names_from(hits: list[dict[str, Any]]) -> list[str]:
@@ -82,8 +104,12 @@ def _build_schema_text(tables: list[dict[str, Any]], relationships: list[dict[st
 
 def build_graph(services: AgentServices) -> Any:
     """Compile the LangGraph state machine."""
+    # One emitter per graph (i.e. per run): it owns the run's sequence numbers
+    # and is a no-op when no sink was injected.
+    progress = ProgressEmitter(services.sink)
 
     async def _plan(state: AgentState) -> dict[str, Any]:
+        progress.emit(ProgressEventType.RUN_STARTED, question=state["question"], attempt=1)
         return {"status": AgentStatus.RETRIEVING_METADATA, "attempts": 1}
 
     async def _retrieve(state: AgentState) -> dict[str, Any]:
@@ -127,6 +153,10 @@ def build_graph(services: AgentServices) -> Any:
                 else AgentStatus.GENERATING_SQL
             ),
         }
+        if not schema_unavailable:
+            # Only a completed retrieval is reported: a broken schema discovery
+            # surfaces through the retry/failure event that carries its reason.
+            progress.emit(ProgressEventType.METADATA_RETRIEVED, attempt=state.get("attempts", 1))
         return update
 
     async def _generate(state: AgentState) -> dict[str, Any]:
@@ -151,6 +181,11 @@ def build_graph(services: AgentServices) -> Any:
                 "validation_error": None,
                 "query_error": None,
             }
+        progress.emit(
+            ProgressEventType.SQL_GENERATED,
+            attempt=state.get("attempts", 1),
+            sql=candidate,
+        )
         return {
             "sql": candidate,
             "status": AgentStatus.VALIDATING_SQL,
@@ -165,6 +200,11 @@ def build_graph(services: AgentServices) -> Any:
             bounded = validate_and_bound_query(sql, max_rows=services.max_rows)
         except UnsafeQueryError as error:
             return {"bounded_sql": "", "validation_error": str(error)}
+        progress.emit(
+            ProgressEventType.SQL_VALIDATED,
+            attempt=state.get("attempts", 1),
+            sql=bounded,
+        )
         return {"bounded_sql": bounded, "validation_error": None}
 
     async def _execute(state: AgentState) -> dict[str, Any]:
@@ -173,8 +213,15 @@ def build_graph(services: AgentServices) -> Any:
         )
         if not result.get("valid", False):
             return {"result": None, "query_error": result.get("message", "query failed")}
+        rows = result.get("entries", [])
+        progress.emit(
+            ProgressEventType.SQL_EXECUTED,
+            attempt=state.get("attempts", 1),
+            sql=state.get("bounded_sql", ""),
+            row_count=len(rows),
+        )
         return {
-            "result": result.get("entries", []),
+            "result": rows,
             "query_error": None,
             "status": AgentStatus.ANALYZING_RESULTS,
         }
@@ -189,12 +236,36 @@ def build_graph(services: AgentServices) -> Any:
             # Never fabricate: on a model failure the answer stays unset and the
             # run retries (bounded) or fails cleanly with the error recorded.
             return {"answer": None, "llm_error": str(error)}
+        progress.emit(
+            ProgressEventType.ANALYSIS_COMPLETED,
+            attempt=state.get("attempts", 1),
+            answer=answer,
+        )
+        progress.emit(
+            ProgressEventType.RUN_COMPLETED,
+            attempt=state.get("attempts", 1),
+            status=str(AgentStatus.COMPLETED),
+            answer=answer,
+        )
         return {"answer": answer, "status": AgentStatus.COMPLETED, "llm_error": None}
 
     async def _retry(state: AgentState) -> dict[str, Any]:
+        # The retry carries the reason the attempt was rejected, so a consumer
+        # sees why the pipeline went around again instead of guessing.
+        progress.emit(
+            ProgressEventType.RUN_RETRYING,
+            attempt=state.get("attempts", 1),
+            reason=failure_reason(state),
+        )
         return {"attempts": state.get("attempts", 0) + 1, "status": AgentStatus.RETRYING}
 
     async def _fail(state: AgentState) -> dict[str, Any]:
+        progress.emit(
+            ProgressEventType.RUN_FAILED,
+            attempt=state.get("attempts", 1),
+            status=str(AgentStatus.FAILED),
+            reason=failure_reason(state),
+        )
         return {"status": AgentStatus.FAILED}
 
     def _route_after_retrieve(state: AgentState) -> str:
