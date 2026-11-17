@@ -216,7 +216,7 @@ def _services(
     max_attempts: int = 2,
     max_parallelism: int = DEFAULT_MAX_PARALLELISM,
     table_names: list[str] | None = None,
-    tool_call_counter: CountingCapabilities | None = None,
+    capabilities: CountingCapabilities | None = None,
 ) -> ManagerServices:
     return ManagerServices(
         llm=llm,
@@ -224,10 +224,9 @@ def _services(
         max_attempts=max_attempts,
         max_parallelism=max_parallelism,
         table_names=table_names or ["orders", "order_items"],
-        # The shared surface the manager wraps in a fresh counter per run. The
-        # keyword keeps its pre-M8 name so the inspect tests call this helper
-        # unchanged; the injected object is the shared capability itself.
-        capabilities=tool_call_counter,
+        # The shared capability surface; the manager wraps it in a fresh
+        # counting decorator per analyst run, so per-record counts stay exact.
+        capabilities=capabilities,
     )
 
 
@@ -277,7 +276,7 @@ async def test_evidence_records_carry_each_runs_tool_calls() -> None:
         },
     )
     llm = FakeManagerLLM(raw="Revenue by category?\nTop sellers?")
-    state = await _invoke(_services(llm, analyst, tool_call_counter=counter))
+    state = await _invoke(_services(llm, analyst, capabilities=counter))
 
     records = state["evidence"]
     assert [r.tool_calls for r in records] == [
@@ -300,7 +299,7 @@ async def test_failed_sub_analysis_still_carries_its_tool_calls() -> None:
         {"Bad question?": [{"query": 3}]},
     )
     llm = FakeManagerLLM(raw="Bad question?")
-    state = await _invoke(_services(llm, analyst, tool_call_counter=counter))
+    state = await _invoke(_services(llm, analyst, capabilities=counter))
 
     assert state["evidence"][0].error is not None
     assert state["evidence"][0].tool_calls == {"query": 3}
@@ -439,7 +438,7 @@ async def test_per_record_counts_are_exact_when_runs_interleave() -> None:
     shared = CountingCapabilities(raw)
     analyst = RoundAnalyst(dict.fromkeys(questions, 0), spend=dict.fromkeys(questions, pattern))
     llm = FakeManagerLLM(raw="\n".join(questions))
-    state = await _invoke(_services(llm, analyst, tool_call_counter=shared))
+    state = await _invoke(_services(llm, analyst, capabilities=shared))
 
     records = state["evidence"]
     assert analyst.max_active[0] == len(questions)  # the runs really overlapped
@@ -484,7 +483,7 @@ async def test_raising_sub_run_settles_siblings_then_propagates() -> None:
     shared = CountingCapabilities(raw)
     analyst = ExplodingAnalyst("Q1?", expected=len(questions))
     llm = FakeManagerLLM(raw="\n".join(questions))
-    graph = build_manager_graph(_services(llm, analyst, tool_call_counter=shared))
+    graph = build_manager_graph(_services(llm, analyst, capabilities=shared))
 
     run = asyncio.create_task(graph.ainvoke({"request": "Summarize sales."}))
     await asyncio.wait_for(analyst.exploded.wait(), timeout=1.0)
