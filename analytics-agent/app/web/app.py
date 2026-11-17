@@ -68,9 +68,11 @@ async def _read_run_request(
     """Parse and validate ``{"request": ..., "mode": ...}``.
 
     Returns the run to start, or a 400 response naming what was wrong. The JSON
-    shape is the page's own contract (spec D4); a mode the process cannot run
-    yet is rejected instead of silently falling back, so ticket 07's arrival is
-    the only thing that changes this behavior.
+    shape is the page's own contract (spec D4), and ``mode`` selects one of the
+    modes this process actually has a runner for (``analyst``/``manager``). An
+    unknown or unavailable mode is rejected before any run is started, with the
+    available modes in the body so a client can choose a valid one; it never
+    falls back silently to the manager.
     """
     try:
         body = await request.json()
@@ -108,9 +110,11 @@ def create_app(
 
     ``settings`` defaults to the process settings (``WEB_HOST``/``WEB_PORT``/
     ``WEB_TOKEN``/``WEB_MAX_CONCURRENT_RUNS``). ``runners`` is the test seam: the
-    ASGI tests inject a fake runner and never touch MCP, the database or a
-    model. The production default is the manager entrypoint. The concurrency
-    limit is process-wide because one app runs in one process.
+    ASGI tests inject fake runners and never touch MCP, the database or a
+    model. The production default runs both modes: the analyst entrypoint for a
+    single question and the manager entrypoint for a management request. The
+    concurrency limit is process-wide because one app runs in one process, and
+    it admits both modes from the same pool.
     """
     resolved = settings if settings is not None else get_settings()
     service = RunService(runners, max_concurrent_runs=resolved.web_max_concurrent_runs)

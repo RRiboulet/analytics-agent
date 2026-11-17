@@ -506,3 +506,87 @@ async def test_second_visitor_over_the_endpoint_is_queued_then_runs(
         assert frames[-1][1]["status"] == "completed"
         assert frames[-1][1]["report"] == f"report: {request}"
         assert frames[-1][1]["error"] is None
+
+
+async def test_queued_analyst_run_is_queued_then_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same slot pool and wire contract admit an analyst run (spec R7/R8).
+
+    Analyst mode is not a second queue: it waits on the one process-wide
+    semaphore, gets the same ``queued`` frame, and then streams its own mode's
+    final payload.
+    """
+
+    class HeldAnalyst(HeldOverHttp):
+        async def __call__(self, request: str, sink) -> RunOutcome:
+            await super().__call__(request, sink)
+            return RunOutcome(status="completed", report=None, answer=f"answer: {request}")
+
+    queued = asyncio.Event()
+    notices: list[QueuedNotice] = []
+
+    class NotifyingSink(QueueSink):
+        def emit_queued(self, notice: QueuedNotice) -> None:
+            notices.append(notice)
+            queued.set()
+            super().emit_queued(notice)
+
+    monkeypatch.setattr(web_app, "QueueSink", NotifyingSink)
+    runner = HeldAnalyst()
+    app = create_app(
+        settings=Settings(_env_file=None, web_max_concurrent_runs=1),
+        runners={RunMode.ANALYST: runner},
+    )
+
+    async def post(client, request: str):
+        return await client.post("/api/run", json={"request": request, "mode": "analyst"})
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        first_task = asyncio.create_task(post(client, "first"))
+        second_task = None
+        try:
+            await asyncio.wait_for(runner.entered.wait(), timeout=5)
+            second_task = asyncio.create_task(post(client, "second"))
+            await asyncio.wait_for(queued.wait(), timeout=5)
+            assert runner.started == ["first"]
+            assert notices == [QueuedNotice(runs_ahead=1, limit=1)]
+
+            runner.release.set()
+            first, second = await asyncio.wait_for(
+                asyncio.gather(first_task, second_task), timeout=5
+            )
+        finally:
+            runner.release.set()
+            pending = [
+                task for task in (first_task, second_task) if task is not None and not task.done()
+            ]
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=5)
+
+    second_frames = parse_frames(second.text)
+    assert [name for name, _ in second_frames] == [
+        "queued",
+        "progress",
+        "progress",
+        "final",
+    ]
+    assert second_frames[0][1] == {
+        "type": QUEUED_EVENT_TYPE,
+        "state": "queued",
+        "runs_ahead": 1,
+        "limit": 1,
+    }
+    for frames, request in (
+        (parse_frames(first.text), "first"),
+        (second_frames, "second"),
+    ):
+        progress = [payload for name, payload in frames if name == "progress"]
+        assert progress[0]["mode"] == "analyst"
+        final = frames[-1][1]
+        assert final["mode"] == "analyst"
+        assert final["status"] == "completed"
+        assert final["answer"] == f"answer: {request}"

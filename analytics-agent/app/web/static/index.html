@@ -77,6 +77,24 @@
         cursor: pointer;
       }
       button:disabled { opacity: 0.55; cursor: progress; }
+      fieldset { margin: 0; padding: 0; border: 0; }
+      fieldset legend { padding: 0; font-weight: 600; margin-bottom: 0.35rem; }
+      .mode-choice { display: grid; gap: 0.4rem; }
+      .mode-option {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.45rem 0.6rem;
+        align-items: baseline;
+        padding: 0.5rem 0.7rem;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        cursor: pointer;
+      }
+      .mode-option:has(input:checked) { border-color: var(--accent); }
+      .mode-option input { margin: 0; }
+      .mode-label { font-weight: 600; }
+      .mode-hint { color: var(--muted); font-size: 0.85rem; }
       #status {
         margin: 1.25rem 0 0;
         padding: 0.55rem 0.75rem;
@@ -247,18 +265,32 @@
   </head>
   <body>
     <main>
-      <h1>Analytics manager</h1>
+      <h1>Analytics agent</h1>
       <p class="lede">
-        Submit a management request. The pipeline renders as it runs — decomposed sub-questions,
-        each analysis with its SQL, rows and answer, the inspect decision, the groundedness verdict
-        — and ends with the grounded report, its elapsed time and the MCP calls it spent.
+        Ask one question for a grounded answer in one pass, or submit a management request to watch
+        the manager decompose it, analyse each part with its SQL and rows, inspect the evidence and
+        synthesise a grounded report. Both render live and end with elapsed time and the MCP calls
+        the run spent.
       </p>
 
-      <!-- data-mode values are the server's RunMode names; ticket 07 turns this
-           hidden input into a single-question / management-request choice. -->
-      <form id="run-form" data-endpoint="/api/run" data-mode="manager">
-        <input id="mode" name="mode" type="hidden" value="manager" />
-        <label for="request">Management request</label>
+      <form id="run-form" data-endpoint="/api/run">
+        <!-- The mode is the server's RunMode value and is visible before
+             submitting (ticket 07): a single question is the fast first
+             interaction; the management request is the full pipeline. -->
+        <fieldset id="mode-choice" class="mode-choice">
+          <legend>What should run?</legend>
+          <label class="mode-option" for="mode-analyst">
+            <input id="mode-analyst" type="radio" name="mode" value="analyst" checked />
+            <span class="mode-label">Single question</span>
+            <span class="mode-hint">One analyst run — answer, SQL and rows in one pass.</span>
+          </label>
+          <label class="mode-option" for="mode-manager">
+            <input id="mode-manager" type="radio" name="mode" value="manager" />
+            <span class="mode-label">Management request</span>
+            <span class="mode-hint">Decompose, analyse in parallel, inspect and synthesise.</span>
+          </label>
+        </fieldset>
+        <label for="request">Question or management request</label>
         <textarea
           id="request"
           name="request"
@@ -343,7 +375,7 @@
         </section>
 
         <section id="report-section" hidden>
-          <h2>Report</h2>
+          <h2 id="report-heading">Report</h2>
           <pre id="report"></pre>
         </section>
       </section>
@@ -392,6 +424,7 @@
         const rejected = document.getElementById("rejected");
         const rejectedReport = document.getElementById("rejected-report");
         const reportSection = document.getElementById("report-section");
+        const reportHeading = document.getElementById("report-heading");
         const reportBox = document.getElementById("report");
 
         // A visitor who opened the page with ?token=... has the optional shared
@@ -405,6 +438,11 @@
         const cards = new Map();
         let followUpDividerShown = false;
         let sawTerminal = false;
+        // The mode and question of the run currently on screen. Analyst stage
+        // events carry no sub-question index (there is exactly one analysis),
+        // so these are what attribute them to the single card.
+        let currentMode = "analyst";
+        let currentQuestion = "";
 
         // ---- small helpers ---------------------------------------------
         function make(tag, className, text) {
@@ -494,8 +532,13 @@
             if (card) stage(card, "start", "analysis started", data.attempt, null, "ok");
             return;
           }
-          showRequest(data.question);
-          setStatus("Running — the manager is working on the request.", "running");
+          showRequest(data.question || currentQuestion);
+          setStatus(
+            currentMode === "analyst"
+              ? "Running — answering the question."
+              : "Running — the manager is working on the request.",
+            "running",
+          );
         }
 
         function onRequestAccepted(data) {
@@ -631,7 +674,18 @@
         }
 
         function cardFor(data) {
-          return isIndex(data.index) ? cards.get(data.index) || null : null;
+          if (isIndex(data.index)) return cards.get(data.index) || null;
+          // Analyst mode has exactly one analysis and its stage events carry no
+          // index: they belong to the single card, created on first use. A
+          // manager's own events use manager.* types, so nothing else lands here.
+          if (currentMode === "analyst") return analystCard();
+          return null;
+        }
+
+        function analystCard() {
+          const card = ensureCard(0, currentQuestion, false);
+          if (card) show(pipeline, true);
+          return card;
         }
 
         function updateMeta(card) {
@@ -865,6 +919,14 @@
             if (card) stage(card, "finished", "analysis complete", data.attempt, null, "ok");
             return;
           }
+          if (currentMode === "analyst") {
+            const answer = typeof data.answer === "string" ? data.answer.trim() : "";
+            setStatus(
+              answer ? "Completed — the answer is below." : "Finished.",
+              data.status === "failed" ? "failed" : "completed",
+            );
+            return;
+          }
           setStatus(
             data.report ? "Completed — the grounded report is below." : "Finished.",
             data.status === "failed" ? "failed" : "completed",
@@ -873,15 +935,17 @@
 
         function onRunFailed(data) {
           const reason = data.reason || data.error || "no reason was reported";
-          if (isIndex(data.index)) {
-            const card = ensureCard(data.index, data.question, Boolean(data.is_follow_up));
-            if (card) {
-              stage(card, "failed", "analysis failed", data.attempt, reason, "bad");
-              card.item.dataset.state = "failed";
-              card.stateChip.textContent = "failed";
-              card.error.body.textContent = reason;
-              show(card.error.node, true);
-            }
+          const card = isIndex(data.index)
+            ? ensureCard(data.index, data.question, Boolean(data.is_follow_up))
+            : currentMode === "analyst"
+              ? analystCard()
+              : null;
+          if (card) {
+            stage(card, "failed", "analysis failed", data.attempt, reason, "bad");
+            card.item.dataset.state = "failed";
+            card.stateChip.textContent = "failed";
+            card.error.body.textContent = reason;
+            show(card.error.node, true);
             return;
           }
           setStatus(`The run failed: ${reason}`, "failed");
@@ -1047,6 +1111,8 @@
 
         function showFinal(data) {
           sawTerminal = true;
+          const isAnalyst = data.mode === "analyst" || (data.mode === undefined && currentMode === "analyst");
+          if (typeof data.mode === "string") currentMode = data.mode;
           show(result, true);
           show(pipeline, true);
           finalStatus.textContent = data.status || "unknown";
@@ -1056,27 +1122,39 @@
 
           // Fallbacks for a stream whose live events were missed (a reconnect,
           // or a runner that emitted nothing): the final payload is complete.
-          if (!subQuestionsList.childElementCount && Array.isArray(data.sub_questions)) {
-            if (data.sub_questions.length) {
-              onDecomposed({ questions: data.sub_questions });
+          // Manager stages only — an analyst run has none, and empty
+          // decomposition/inspect panels would be scaffolding, not content.
+          if (!isAnalyst) {
+            if (!subQuestionsList.childElementCount && Array.isArray(data.sub_questions)) {
+              if (data.sub_questions.length) {
+                onDecomposed({ questions: data.sub_questions });
+              }
             }
-          }
-          if (inspectPanel.hidden && Array.isArray(data.follow_up_questions)) {
-            onInspected({
-              status: data.follow_up_questions.length ? "follow_ups" : "none",
-              questions: data.follow_up_questions,
-            });
+            if (inspectPanel.hidden && Array.isArray(data.follow_up_questions)) {
+              onInspected({
+                status: data.follow_up_questions.length ? "follow_ups" : "none",
+                questions: data.follow_up_questions,
+              });
+            }
           }
           // Rows arrive only here: this is what backfills the live cards.
           (Array.isArray(data.evidence) ? data.evidence : []).forEach(applyEvidenceRecord);
           markUnfinishedCards("unfinished");
+
+          // One payload shape, presented by mode: an analyst run has an answer,
+          // a manager run has a report. Neither is ever shown in the other's
+          // place, and an empty analyst answer is never rendered as a blank
+          // card — the SQL/rows above stay visible and the message says why.
           const report = typeof data.report === "string" ? data.report.trim() : "";
-          reportBox.textContent = report;
-          show(reportSection, Boolean(report));
+          const answer = typeof data.answer === "string" ? data.answer.trim() : "";
+          const bodyText = isAnalyst ? answer : report;
+          reportHeading.textContent = isAnalyst ? "Answer" : "Report";
+          reportBox.textContent = bodyText;
+          show(reportSection, Boolean(bodyText));
 
           // A rejected attempt is presented as rejected, never as the report.
           const attempt = typeof data.report_attempt === "string" ? data.report_attempt.trim() : "";
-          const showRejected = Boolean(attempt) && !report;
+          const showRejected = Boolean(attempt) && !report && !isAnalyst;
           rejectedReport.textContent = showRejected ? attempt : "";
           show(rejected, showRejected);
           if (showRejected && data.error) {
@@ -1087,6 +1165,11 @@
 
           if (data.error) {
             finalError.textContent = data.error;
+            show(finalError, true);
+          } else if (isAnalyst && !answer) {
+            finalError.textContent =
+              "The run finished without an answer. The SQL and rows above, and any failure it " +
+              "reported, are what it produced.";
             show(finalError, true);
           }
           if (data.status === "completed") {
@@ -1099,11 +1182,13 @@
 
         function showFailed(data) {
           sawTerminal = true;
+          const isAnalyst = data.mode === "analyst" || (data.mode === undefined && currentMode === "analyst");
           show(result, true);
           finalStatus.textContent = "failed";
           finalStatus.dataset.state = "bad";
           finalElapsed.textContent = seconds(data.elapsed_seconds);
           renderToolCalls(data.tool_calls, data.tool_call_total);
+          reportHeading.textContent = isAnalyst ? "Answer" : "Report";
           reportBox.textContent = "";
           show(reportSection, false);
           show(rejected, false);
@@ -1194,6 +1279,7 @@
           eventsList.replaceChildren();
           inspectQuestions.replaceChildren();
           toolCallBreakdown.replaceChildren();
+          reportHeading.textContent = "Report";
           reportBox.textContent = "";
           rejectedReport.textContent = "";
           finalError.textContent = "";
@@ -1240,10 +1326,19 @@
           event.preventDefault();
           const text = requestBox.value.trim();
           if (!text) return;
+          // The visible radio is the request's mode; the server validates it
+          // again and starts nothing for an unknown one.
+          currentMode = form.elements.mode.value === "manager" ? "manager" : "analyst";
+          currentQuestion = text;
 
           reset();
           submit.disabled = true;
-          setStatus("Running — accepting the request.", "running");
+          setStatus(
+            currentMode === "analyst"
+              ? "Running — accepting the question."
+              : "Running — accepting the request.",
+            "running",
+          );
           try {
             const headers = {
               "Content-Type": "application/json",
@@ -1255,7 +1350,7 @@
               headers,
               body: JSON.stringify({
                 request: text,
-                mode: form.elements.mode.value,
+                mode: currentMode,
               }),
             });
             if (!response.ok) throw new Error(await errorMessage(response));

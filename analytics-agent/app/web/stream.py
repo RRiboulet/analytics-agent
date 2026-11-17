@@ -13,9 +13,14 @@ Four frame names make up the contract:
   not part of the run's own event sequence (``seq``): the run has not begun.
 * ``progress`` — one ``ProgressEvent`` per frame, as ``ProgressEvent.as_dict``
   (``type``, ``seq`` and the fields that apply). The manager's own stages and
-  every nested analyst stage arrive on this one ordered stream.
-* ``final`` — the run ended with a result: status, report, elapsed wall time,
-  the run's real MCP call counts and the per-sub-question evidence.
+  every nested analyst stage arrive on this one ordered stream. The run's first
+  progress frame also carries ``mode``, so a consumer knows which pipeline it is
+  reading before the terminal payload (spec R5).
+* ``final`` — the run ended with a result: mode, status, report, answer, elapsed
+  wall time, the run's real MCP call counts and the per-question evidence. Both
+  modes use this one payload shape: ``answer`` is set for an analyst run,
+  ``report`` for a manager run, and the page chooses which to present from the
+  ``mode`` rather than from whichever field happens to be non-empty.
 * ``failed`` — the run *raised*. The manager emits no terminal progress event
   when it raises (a stream simply ends), so the stream itself plays that part
   and reports the exception text. ``final`` is never sent in this case.
@@ -93,15 +98,20 @@ def _queued_frame(notice: QueuedNotice) -> ServerSentEvent:
     return ServerSentEvent(event="queued", data=_json(payload))
 
 
-def _progress_frame(event: ProgressEvent) -> ServerSentEvent:
-    return ServerSentEvent(event="progress", data=_json(event.as_dict()))
+def _progress_frame(event: ProgressEvent, *, mode: RunMode | None = None) -> ServerSentEvent:
+    payload = event.as_dict()
+    if mode is not None:
+        # Only the run's first progress frame: the mode belongs to the stream,
+        # not to each event, and repeating it on every frame would bloat it.
+        payload["mode"] = mode.value
+    return ServerSentEvent(event="progress", data=_json(payload))
 
 
-def _frame(item: QueueItem) -> ServerSentEvent:
+def _frame(item: QueueItem, *, mode: RunMode | None = None) -> ServerSentEvent:
     """One queue item, as the frame name the page dispatches on."""
     if isinstance(item, QueuedNotice):
         return _queued_frame(item)
-    return _progress_frame(item)
+    return _progress_frame(item, mode=mode)
 
 
 def _final_frame(mode: RunMode, outcome: RunOutcome, elapsed: float) -> ServerSentEvent:
@@ -109,6 +119,7 @@ def _final_frame(mode: RunMode, outcome: RunOutcome, elapsed: float) -> ServerSe
         "mode": mode.value,
         "status": outcome.status,
         "report": outcome.report,
+        "answer": outcome.answer,
         "error": outcome.error,
         "elapsed_seconds": round(elapsed, 3),
         "tool_calls": dict(outcome.tool_calls),
@@ -146,13 +157,16 @@ async def stream_run(
     at once. Every event emitted before the run finishes is guaranteed to be in
     the queue by the time the task completes (``emit`` is synchronous), so a
     completed run is drained fully before the terminal frame. One ordered
-    stream: events are yielded as they arrive, and ``seq`` orders them.
+    stream: events are yielded as they arrive, and ``seq`` orders them. The
+    first progress frame names the mode (spec R5); the terminal frame repeats
+    it with the outcome.
 
     ``elapsed`` starts here, before the queue check, so a queued request's final
     frame reports the wait it saw — the wall time the visitor actually spent.
     """
     started = time.perf_counter()
     run_task = asyncio.create_task(service.run(mode, request, sink))
+    first_progress = True
     try:
         while True:
             getter = asyncio.create_task(sink.get())
@@ -160,7 +174,10 @@ async def stream_run(
             if getter in done:
                 # A progress event, or the ``queued`` notice the service emits
                 # before it waits for a slot.
-                yield _frame(getter.result())
+                item = getter.result()
+                yield _frame(item, mode=mode if first_progress else None)
+                if not isinstance(item, QueuedNotice):
+                    first_progress = False
                 continue
             # The run finished first. It emits synchronously, so anything it
             # emitted is already queued: cancel the pending read and drain.
@@ -168,7 +185,9 @@ async def stream_run(
             with suppress(asyncio.CancelledError):
                 await getter
             while (item := sink.get_nowait()) is not None:
-                yield _frame(item)
+                yield _frame(item, mode=mode if first_progress else None)
+                if not isinstance(item, QueuedNotice):
+                    first_progress = False
             break
 
         elapsed = time.perf_counter() - started

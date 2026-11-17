@@ -10,10 +10,10 @@ when a public key is configured).
 import asyncio
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from app.agent.capabilities import MCPCapabilities
+from app.agent.capabilities import CountingCapabilities, MCPCapabilities
 from app.agent.graph import AgentServices, build_graph, failure_reason
 from app.agent.llm import create_llm
 from app.agent.state import AgentState
@@ -32,6 +32,10 @@ class RunResult:
     attempts: int
     state: AgentState
     error: str | None = None
+    # MCP tool calls the run actually spent, per tool name. Counted by the same
+    # delegating decorator the manager uses per sub-run (spec D2/R3), so the web
+    # surface can report real calls for a standalone analyst run too.
+    tool_calls: dict[str, int] = field(default_factory=dict)
 
 
 async def _run_question(
@@ -70,7 +74,10 @@ async def run_agent(question: str, *, sink: ProgressSink | None = None) -> RunRe
     """
     settings = get_settings()
     llm = create_llm()
-    capabilities = MCPCapabilities()
+    # Count per tool on the way through: the caller (the web surface) reports
+    # real call counts instead of estimating them. Delegation only — the
+    # read-only transport and the capability surface are untouched.
+    capabilities = CountingCapabilities(MCPCapabilities())
     tracer = AgentTracer()
     try:
         state = await _run_question(
@@ -95,6 +102,7 @@ async def run_agent(question: str, *, sink: ProgressSink | None = None) -> RunRe
         # A successful run is never an error: this is the same reason the
         # failure event carries, so the caller and the live view agree.
         error=failure_reason(state),
+        tool_calls=capabilities.snapshot(),
     )
 
 
