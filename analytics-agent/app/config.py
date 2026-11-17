@@ -28,8 +28,10 @@ class Settings(BaseSettings):
     )
     max_rows: int = Field(default=100, validation_alias="MAX_ROWS", ge=1, le=1000)
     # Upper bound of the asyncpg pool. Concurrent analyst sessions (M8) hit the
-    # server at once, so this must exceed the old literal of 5; the pool's
-    # min_size stays 1 so a single-client CLI run reserves nothing extra.
+    # server at once, so keep this at least as large as the manager's fan-out
+    # parallelism (MANAGER_MAX_PARALLELISM, default 4) so every concurrent
+    # analyst can hold a connection; the pool's min_size stays 1 so a
+    # single-client CLI run reserves nothing extra.
     db_pool_max_size: int = Field(default=10, validation_alias="DB_POOL_MAX_SIZE", ge=1, le=100)
 
     # ------------------------------------------------------------------

@@ -8,10 +8,11 @@ vocabulary a run uses to say what it is doing while it does it, so a consumer
 It is deliberately tiny and dependency-free:
 
 * ``ProgressEvent`` — one immutable event: a stable ``type`` name, a monotonic
-  per-run ``seq`` number, and the stage-relevant fields (``attempt``, ``sql``,
-  ``row_count``, ``answer``, ``status``, ``reason``, ``question``). Only the
-  fields that apply to an event are set; ``as_dict`` drops the rest, which is
-  the shape the web layer serialises.
+  ``seq`` number (scoped to its producer, see ``ProgressEmitter``), and the
+  stage-relevant fields (``attempt``, ``sql``, ``row_count``, ``answer``,
+  ``status``, ``reason``, ``question``). Only the fields that apply to an event
+  are set; ``as_dict`` drops the rest, which is the shape the web layer
+  serialises.
 * ``ProgressSink`` — the consumer's side: a *synchronous* ``emit(event)``.
   Synchronous by design: emitting never awaits, so a sink hands off and returns
   immediately (an SSE sink pushes onto an ``asyncio`` queue with
@@ -107,9 +108,11 @@ class NullSink:
 class ProgressEmitter:
     """Assign sequence numbers to events and deliver them to an optional sink.
 
-    One emitter belongs to one run (or one producer inside a run): it owns the
-    sequence counter. With ``sink=None`` — the default for library and CLI
-    callers — every ``emit`` returns immediately and costs nothing.
+    One emitter belongs to one producer: that producer's run owns the sequence
+    counter, so ``seq`` numbers are per producer, not per process and not per
+    manager run with several analysts — each analyst's events start again at 1.
+    With ``sink=None`` — the default for library and CLI callers — every
+    ``emit`` returns immediately and costs nothing.
 
     Delivery is fail-open: a raising sink is swallowed. Only ``Exception`` is
     caught, so cancellation and other ``BaseException`` signals still propagate
@@ -132,10 +135,14 @@ class ProgressEmitter:
 
     def emit(self, event_type: ProgressEventType | str, **fields: Any) -> ProgressEvent | None:
         """Emit one event, returning it (or ``None`` when no sink is attached)."""
+        # Build the event before consulting the sink: a malformed event (an
+        # unknown field, a bad type) is a producer bug, and it must raise the
+        # same way in runs with a sink and in runs without one, instead of
+        # hiding until the day someone attaches a consumer.
+        event = ProgressEvent(type=str(event_type), seq=self._seq + 1, **fields)
         if self._sink is None:
             return None
         self._seq += 1
-        event = ProgressEvent(type=str(event_type), seq=self._seq, **fields)
         # Fail-open, like AgentTracer.flush: observability can never break the
         # run it observes. The counter still advanced, so the next event's
         # sequence number stays ahead of the swallowed one.

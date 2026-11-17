@@ -796,6 +796,24 @@ def test_progress_emitter_without_a_sink_costs_nothing() -> None:
     assert emitter.seq == 0
 
 
+def test_progress_emitter_rejects_a_malformed_event_with_or_without_a_sink() -> None:
+    """A malformed event is a producer bug, not something a sink decides.
+
+    The event is constructed before the sink is consulted, so an unknown field
+    fails identically in a run with no sink and in a run with one — otherwise
+    the bug would only appear the day someone attaches a consumer.
+    """
+
+    class Sink:
+        def emit(self, event: ProgressEvent) -> None:
+            pass
+
+    with pytest.raises(TypeError):
+        ProgressEmitter().emit(ProgressEventType.RUN_STARTED, not_a_field="x")
+    with pytest.raises(TypeError):
+        ProgressEmitter(Sink()).emit(ProgressEventType.RUN_STARTED, not_a_field="x")
+
+
 def test_progress_emitter_swallows_sink_errors_and_keeps_numbering() -> None:
     """Fail-open (R10): a raising sink is swallowed; sequencing stays consistent."""
 

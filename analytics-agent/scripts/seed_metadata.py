@@ -23,6 +23,9 @@ async def _main() -> None:
         database_url=settings.admin_database_url,
         query_timeout_seconds=settings.query_timeout_seconds,
         max_rows=settings.max_rows,
+        # Honor a lowered/changed DB_POOL_MAX_SIZE here too, so the seeding run
+        # is not silently more permissive than the server it seeds for.
+        pool_max_size=settings.db_pool_max_size,
     )
     await admin.connect()
     try:

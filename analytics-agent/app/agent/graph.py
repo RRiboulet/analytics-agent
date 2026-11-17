@@ -154,9 +154,16 @@ def build_graph(services: AgentServices) -> Any:
             ),
         }
         if not schema_unavailable:
-            # Only a completed retrieval is reported: a broken schema discovery
-            # surfaces through the retry/failure event that carries its reason.
-            progress.emit(ProgressEventType.METADATA_RETRIEVED, attempt=state.get("attempts", 1))
+            # A completed retrieval is reported even when search_metadata failed
+            # (the run degrades to schema-only), but never as healthy: the
+            # failure travels as the event's reason. A broken schema discovery
+            # reports nothing here; it surfaces through the retry/failure event
+            # that carries its reason.
+            progress.emit(
+                ProgressEventType.METADATA_RETRIEVED,
+                attempt=state.get("attempts", 1),
+                reason=retrieval_errors[0] if retrieval_errors else None,
+            )
         return update
 
     async def _generate(state: AgentState) -> dict[str, Any]:
@@ -213,7 +220,9 @@ def build_graph(services: AgentServices) -> Any:
         )
         if not result.get("valid", False):
             return {"result": None, "query_error": result.get("message", "query failed")}
-        rows = result.get("entries", [])
+        # A null/absent entries payload must not raise inside the node: the
+        # rows are counted and serialized below, so treat it as no rows.
+        rows = result.get("entries") or []
         progress.emit(
             ProgressEventType.SQL_EXECUTED,
             attempt=state.get("attempts", 1),

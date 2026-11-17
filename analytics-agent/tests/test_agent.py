@@ -453,6 +453,8 @@ async def test_successful_run_emits_ordered_progress_events() -> None:
     # Run accepted carries the question; every stage carries its attempt.
     assert sink.events[0].question == "Which status is most common?"
     assert [event.attempt for event in sink.events[1:]] == [1] * (len(sink.events) - 1)
+    # A clean retrieval is reported without a reason (nothing degraded).
+    assert sink.events[1].reason is None
     generated, validated, executed = sink.events[2:5]
     assert generated.sql == sql
     # The validated event carries the bounded SQL that actually runs.
@@ -565,6 +567,58 @@ async def test_raising_sink_leaves_a_failed_run_unchanged() -> None:
     assert guarded["status"] == AgentStatus.FAILED
     assert guarded.get("answer") is None
     assert "Only SELECT" in (failure_reason(guarded) or "")
+
+
+@pytest.mark.asyncio
+async def test_degraded_retrieval_reports_its_reason_instead_of_looking_healthy() -> None:
+    """A schema-only run still reports retrieval, but with the failure as reason."""
+    sink = RecordingSink()
+    state = await _run(
+        AgentServices(
+            llm=FakeLLM(sql="SELECT 1", answer="ok"),
+            capabilities=SearchOnlyFailureCapabilities(),
+            max_attempts=3,
+            sink=sink,
+        )
+    )
+
+    assert state["status"] == AgentStatus.COMPLETED
+    assert state["retrieval_errors"] == ["search_metadata: Tool error: metadata index unavailable"]
+    retrieved = [
+        event for event in sink.events if event.type == ProgressEventType.METADATA_RETRIEVED
+    ]
+    assert len(retrieved) == 1
+    # Degraded is not healthy: the failed search is the event's reason.
+    assert retrieved[0].reason == state["retrieval_errors"][0]
+    # And it is not reported as a run failure, because the run completed.
+    assert ProgressEventType.RUN_FAILED not in sink.types()
+
+
+@pytest.mark.asyncio
+async def test_null_entries_payload_does_not_break_the_execute_node() -> None:
+    """A ``{"entries": null}`` query result is treated as no rows, not a crash."""
+
+    class NullEntriesCapabilities(StubCapabilities):
+        async def call_tool(self, name, args=None) -> dict:
+            if name == "query":
+                self.calls.append((name, args))
+                return {"valid": True, "message": "ok", "entries": None}
+            return await super().call_tool(name, args)
+
+    sink = RecordingSink()
+    state = await _run(
+        AgentServices(
+            llm=FakeLLM(sql="SELECT 1", answer="ok"),
+            capabilities=NullEntriesCapabilities(),
+            max_attempts=3,
+            sink=sink,
+        )
+    )
+
+    assert state["status"] == AgentStatus.COMPLETED
+    assert state["result"] == []
+    executed = next(event for event in sink.events if event.type == ProgressEventType.SQL_EXECUTED)
+    assert executed.row_count == 0
 
 
 @pytest.mark.asyncio
