@@ -3,22 +3,20 @@
 The page submits a request; this module turns it into a run and reports the
 outcome in a shape the stream can serialize. Everything below it is the
 existing system: a management request is the manager entrypoint
-(``run_manager``), which consumes the MCP server over HTTP — the web layer
+(``run_manager``), a single question is the analyst entrypoint
+(``run_agent``), and both consume the MCP server over HTTP — the web layer
 imports no database client and builds no SQL.
 
-Two future tickets hook in here, which is why composition has exactly one
-start point:
-
-* ticket 07 (analyst mode) adds ``RunMode.ANALYST`` and its runner;
-* ticket 06 (rich page) reads the extra final-payload fields (per-record
-  evidence, including each record's own call counts) without changing this
-  contract.
+Both modes share one start point, one concurrency limit and one wire contract:
+``RunService`` dispatches by ``RunMode`` and a runner only has to return a
+``RunOutcome``. That is why analyst mode needed no change to the queue or the
+stream — the mode is data, not a second pipeline.
 
 Concurrency (spec R8/D6) lives here too, because this is the one place a run
 begins: ``RunService`` holds a process-wide semaphore sized by
 ``WEB_MAX_CONCURRENT_RUNS``. A request that finds every slot taken is *not*
 rejected and not silently throttled — it is told it is queued, on the same
-stream, and starts when a slot frees.
+stream, and starts when a slot frees. The bound applies to both modes.
 
 The runners are injectable so the web tests stay hermetic: no MCP, no
 database, no model.
@@ -35,13 +33,15 @@ from app.progress import ProgressEvent, ProgressSink
 
 
 class RunMode(StrEnum):
-    """A kind of request the page can submit (spec D5).
+    """A kind of request the page can submit (spec D5/R7).
 
-    One flow, two modes eventually: ``ANALYST`` (one question, no manager
-    stages) arrives with ticket 07. Until then manager-only is the honest
-    surface, and the endpoint rejects the rest instead of pretending.
+    One flow, two modes: ``ANALYST`` answers a single question without any
+    manager stage (the fast first interaction) and ``MANAGER`` runs the full
+    decomposition/inspect/synthesis pipeline. Both stream through the same sink
+    and end in the same final payload; the mode is the only difference.
     """
 
+    ANALYST = "analyst"
     MANAGER = "manager"
 
 
@@ -60,6 +60,10 @@ class RunOutcome:
     status: str | None
     report: str | None
     error: str | None = None
+    # The grounded answer of an analyst-mode run; ``None`` for the manager,
+    # which reports a report instead. Kept separate from ``report`` so the page
+    # can never present one as the other.
+    answer: str | None = None
     tool_calls: dict[str, int] = field(default_factory=dict)
     sub_questions: list[str] = field(default_factory=list)
     follow_up_questions: list[str] = field(default_factory=list)
@@ -139,9 +143,58 @@ async def run_manager_request(request: str, sink: ProgressSink) -> RunOutcome:
     )
 
 
+async def run_analyst_request(question: str, sink: ProgressSink) -> RunOutcome:
+    """Run one single question through the existing analyst entrypoint.
+
+    Imported lazily for the same reason the manager runner is: the web process
+    starts (and ``--check`` passes) without loading the model/MCP machinery.
+    ``run_agent`` builds a fresh graph per invocation (spec D10), so two
+    concurrent analyst runs never share a sink or an event sequence.
+
+    The outcome is the analyst's own result projected onto the same
+    ``RunOutcome`` the manager uses. The single question is reported as one
+    evidence record (index 0) in exactly the manager's evidence shape, so the
+    page needs no second renderer: rows, SQL, answer, error and per-run call
+    counts arrive with the terminal payload. A failed run still carries the
+    last SQL it generated or executed, which is what the page shows instead of
+    an empty answer.
+    """
+    from app.agent.entrypoint import run_agent  # noqa: PLC0415
+
+    result = await run_agent(question, sink=sink)
+    state = result.state
+    # Same projection as ``EvidenceRecord.from_agent_state``: the bounded SQL
+    # that actually ran when there is one, otherwise the last generated SQL.
+    error = state.get("llm_error") or state.get("query_error") or state.get("validation_error")
+    evidence = [
+        {
+            "sub_index": 0,
+            "sub_question": question,
+            "status": result.status,
+            "sql": result.sql,
+            "rows": state.get("result"),
+            "answer": result.answer,
+            "error": error,
+            "is_follow_up": False,
+            "tool_calls": dict(result.tool_calls),
+        }
+    ]
+    return RunOutcome(
+        status=result.status,
+        report=None,
+        error=result.error,
+        answer=result.answer,
+        tool_calls=dict(result.tool_calls),
+        evidence=evidence,
+    )
+
+
 def default_runners() -> dict[RunMode, RunRunner]:
     """The production runners; tests inject their own mapping instead."""
-    return {RunMode.MANAGER: run_manager_request}
+    return {
+        RunMode.ANALYST: run_analyst_request,
+        RunMode.MANAGER: run_manager_request,
+    }
 
 
 class RunService:
@@ -150,7 +203,8 @@ class RunService:
     ``runners`` is the injection seam (the ASGI tests pass a fake and assert
     the frames it produces). ``max_concurrent_runs`` is the process-wide cap
     (``WEB_MAX_CONCURRENT_RUNS``): one ``RunService`` per app, one app per
-    process. Ticket 07 adds an analyst entry here without touching the queue.
+    process. The same slot pool admits manager and analyst runs, so the limit
+    bounds the process rather than one mode.
     """
 
     def __init__(

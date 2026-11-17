@@ -54,6 +54,14 @@ async def test_run_agent_with_fake_components(monkeypatch) -> None:
     assert res.status == "completed"
     assert res.answer == "answer"
     assert res.sql is not None
+    # The run reports the calls it actually spent (the web surface's final
+    # payload reads these instead of estimating).
+    assert res.tool_calls == {
+        "search_metadata": 1,
+        "list_tables": 1,
+        "get_relationships": 1,
+        "query": 1,
+    }
 
 
 @pytest.mark.asyncio

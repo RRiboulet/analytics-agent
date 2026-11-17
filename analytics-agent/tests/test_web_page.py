@@ -30,9 +30,11 @@ INDEX_FILE = PROJECT_ROOT / "app" / "web" / "static" / "index.html"
 # on purpose: it is the page's contract, and a page field no server sends (or a
 # server field the page stopped reading) is exactly what this test looks for.
 FINAL_PAYLOAD_FIELDS = [
+    "mode",
     "evidence",
     "status",
     "report",
+    "answer",
     "report_attempt",
     "error",
     "elapsed_seconds",
@@ -184,7 +186,7 @@ def test_rejected_report_is_presented_as_rejected_never_as_the_report(page: str)
     # hidden when there is no report.
     assert "rejectedReport.textContent" in page
     assert "show(rejected, showRejected)" in page
-    assert "const showRejected = Boolean(attempt) && !report;" in page
+    assert "const showRejected = Boolean(attempt) && !report && !isAnalyst;" in page
 
 
 def test_failure_states_are_rendered(page: str) -> None:
@@ -218,6 +220,29 @@ def test_page_is_one_file_with_no_build_step_or_framework(page: str) -> None:
     assert "fetch(" in page
 
 
+def test_analyst_mode_has_no_manager_scaffolding(page: str) -> None:
+    """One question streams its stages into one card, never the manager view.
+
+    Analyst stage events carry no sub-question index, so the page attributes
+    them to the single card itself. The final payload's manager fallbacks are
+    gated on the mode: an analyst run must not reveal empty decomposition,
+    inspect or synthesis panels, and its answer is presented as an answer, not
+    as a report.
+    """
+    # The visible mode choice and the default (the fast first interaction).
+    assert 'name="mode" value="analyst" checked' in page
+    assert 'name="mode" value="manager"' in page
+    # A missing index belongs to the single analyst card; manager events do not.
+    assert 'if (currentMode === "analyst") return analystCard();' in page
+    # Manager-only fallbacks and sections are gated on the mode.
+    assert "if (!isAnalyst) {" in page
+    assert 'reportHeading.textContent = isAnalyst ? "Answer" : "Report";' in page
+    # An empty answer is stated, never left as a blank card.
+    assert "The run finished without an answer." in page
+    # The answer field is read from the final payload.
+    assert "data.answer" in page
+
+
 # ---------------------------------------------------------------------------
 # The hooks ticket 05 exposed stay put
 # ---------------------------------------------------------------------------
@@ -229,8 +254,11 @@ def test_page_is_one_file_with_no_build_step_or_framework(page: str) -> None:
         # Ticket 05's hooks: the form, the status line, the result summary.
         'id="run-form"',
         'data-endpoint="/api/run"',
-        'data-mode="manager"',
-        'id="mode"',
+        'id="mode-analyst"',
+        'id="mode-manager"',
+        'name="mode"',
+        'value="analyst"',
+        'value="manager"',
         'id="request"',
         'id="submit"',
         'id="status"',
@@ -266,6 +294,7 @@ def test_page_is_one_file_with_no_build_step_or_framework(page: str) -> None:
         'id="rejected"',
         'id="rejected-report"',
         'id="report-section"',
+        'id="report-heading"',
         'id="tool-call-breakdown"',
         'id="notes"',
         'id="log"',
