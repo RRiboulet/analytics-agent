@@ -154,6 +154,14 @@ class Settings(BaseSettings):
     # or a ``token`` query parameter, compared in constant time. It is never a
     # database or model credential and is never echoed in a response or a log.
     web_token: str | None = Field(default=None, validation_alias="WEB_TOKEN")
+    # Process-wide cap on in-flight runs (spec R8/D6): a visitor beyond the cap
+    # does not get an error — it sees an explicit queued state and starts when
+    # a slot frees. Each run is a whole manager run, which already fans out up
+    # to MANAGER_MAX_PARALLELISM analyst runs against the model provider and the
+    # database pool, so this stays small (2 by default); 1 serializes runs.
+    web_max_concurrent_runs: int = Field(
+        default=2, validation_alias="WEB_MAX_CONCURRENT_RUNS", ge=1, le=32
+    )
 
 
 @lru_cache

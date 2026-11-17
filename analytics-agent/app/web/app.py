@@ -4,7 +4,9 @@ Routes:
 
 * ``GET /`` — the page (one static file, no framework, no build step).
 * ``POST /api/run`` — start a run and stream it as Server-Sent Events, ending
-  with a ``final`` payload (or a ``failed`` frame when the run raised).
+  with a ``final`` payload (or a ``failed`` frame when the run raised). A
+  visitor beyond ``WEB_MAX_CONCURRENT_RUNS`` gets a ``queued`` frame first and
+  then the same stream once a slot frees (spec R8).
 
 The web layer is deliberately thin: it validates and authenticates the request,
 hands it to ``RunService`` (the composition seam) and serializes what comes
@@ -105,12 +107,13 @@ def create_app(
     """Build the ASGI app.
 
     ``settings`` defaults to the process settings (``WEB_HOST``/``WEB_PORT``/
-    ``WEB_TOKEN``). ``runners`` is the test seam: the ASGI tests inject a fake
-    runner and never touch MCP, the database or a model. The production default
-    is the manager entrypoint.
+    ``WEB_TOKEN``/``WEB_MAX_CONCURRENT_RUNS``). ``runners`` is the test seam: the
+    ASGI tests inject a fake runner and never touch MCP, the database or a
+    model. The production default is the manager entrypoint. The concurrency
+    limit is process-wide because one app runs in one process.
     """
     resolved = settings if settings is not None else get_settings()
-    service = RunService(runners)
+    service = RunService(runners, max_concurrent_runs=resolved.web_max_concurrent_runs)
 
     async def index(_request: Request) -> Response:
         return FileResponse(INDEX_FILE, media_type="text/html; charset=utf-8")

@@ -4,8 +4,13 @@ A browser cannot use ``EventSource`` here because the run needs a POST body, so
 the page reads the response with ``fetch`` and parses SSE frames itself.
 ``sse-starlette`` supplies ``EventSourceResponse``/``ServerSentEvent``.
 
-Three frame names make up the contract:
+Four frame names make up the contract:
 
+* ``queued`` — the request is waiting for a free run slot (spec R8/D6): the
+  process-wide limit is full, so the run has not started yet. Sent immediately,
+  before the first ``progress`` frame, and only to a request that had to wait;
+  a visitor waits rather than seeing an error, so silence would be wrong. It is
+  not part of the run's own event sequence (``seq``): the run has not begun.
 * ``progress`` — one ``ProgressEvent`` per frame, as ``ProgressEvent.as_dict``
   (``type``, ``seq`` and the fields that apply). The manager's own stages and
   every nested analyst stage arrive on this one ordered stream.
@@ -19,7 +24,9 @@ Three frame names make up the contract:
 ``emit`` does ``put_nowait`` and returns, so observing a run never delays it
 (spec D3/R10). The queue is unbounded and drained by the same event loop, so a
 slow reader grows memory rather than blocking the run — the documented contract
-is that a sink must not block; only the raising half is enforceable.
+is that a sink must not block; only the raising half is enforceable. The same
+queue carries the queue notice, because ordering is part of the contract: the
+``queued`` frame can never overtake the first ``progress`` frame.
 """
 
 import asyncio
@@ -32,26 +39,38 @@ from typing import Any
 from sse_starlette.sse import ServerSentEvent
 
 from app.progress import ProgressEvent
-from app.web.composition import RunMode, RunOutcome, RunService
+from app.web.composition import (
+    QUEUED_EVENT_TYPE,
+    QueuedNotice,
+    RunMode,
+    RunOutcome,
+    RunService,
+)
+
+# What one stream carries: the run's progress, plus the notice that it queued.
+QueueItem = ProgressEvent | QueuedNotice
 
 
 class QueueSink:
-    """Progress sink that hands events to an ``asyncio`` queue, never blocking.
+    """Progress channel that hands events to an ``asyncio`` queue, never blocking.
 
     Called from the run's event loop (same loop as the drain), so
     ``put_nowait`` is safe and an unbounded queue cannot raise ``QueueFull``.
     """
 
     def __init__(self) -> None:
-        self._queue: asyncio.Queue[ProgressEvent] = asyncio.Queue()
+        self._queue: asyncio.Queue[QueueItem] = asyncio.Queue()
 
     def emit(self, event: ProgressEvent) -> None:
         self._queue.put_nowait(event)
 
-    async def get(self) -> ProgressEvent:
+    def emit_queued(self, notice: QueuedNotice) -> None:
+        self._queue.put_nowait(notice)
+
+    async def get(self) -> QueueItem:
         return await self._queue.get()
 
-    def get_nowait(self) -> ProgressEvent | None:
+    def get_nowait(self) -> QueueItem | None:
         try:
             return self._queue.get_nowait()
         except asyncio.QueueEmpty:
@@ -64,8 +83,25 @@ def _json(payload: Mapping[str, Any]) -> str:
     return json.dumps(payload, default=str)
 
 
+def _queued_frame(notice: QueuedNotice) -> ServerSentEvent:
+    payload = {
+        "type": QUEUED_EVENT_TYPE,
+        "state": "queued",
+        "runs_ahead": notice.runs_ahead,
+        "limit": notice.limit,
+    }
+    return ServerSentEvent(event="queued", data=_json(payload))
+
+
 def _progress_frame(event: ProgressEvent) -> ServerSentEvent:
     return ServerSentEvent(event="progress", data=_json(event.as_dict()))
+
+
+def _frame(item: QueueItem) -> ServerSentEvent:
+    """One queue item, as the frame name the page dispatches on."""
+    if isinstance(item, QueuedNotice):
+        return _queued_frame(item)
+    return _progress_frame(item)
 
 
 def _final_frame(mode: RunMode, outcome: RunOutcome, elapsed: float) -> ServerSentEvent:
@@ -111,6 +147,9 @@ async def stream_run(
     the queue by the time the task completes (``emit`` is synchronous), so a
     completed run is drained fully before the terminal frame. One ordered
     stream: events are yielded as they arrive, and ``seq`` orders them.
+
+    ``elapsed`` starts here, before the queue check, so a queued request's final
+    frame reports the wait it saw — the wall time the visitor actually spent.
     """
     started = time.perf_counter()
     run_task = asyncio.create_task(service.run(mode, request, sink))
@@ -119,15 +158,17 @@ async def stream_run(
             getter = asyncio.create_task(sink.get())
             done, _ = await asyncio.wait({getter, run_task}, return_when=asyncio.FIRST_COMPLETED)
             if getter in done:
-                yield _progress_frame(getter.result())
+                # A progress event, or the ``queued`` notice the service emits
+                # before it waits for a slot.
+                yield _frame(getter.result())
                 continue
             # The run finished first. It emits synchronously, so anything it
             # emitted is already queued: cancel the pending read and drain.
             getter.cancel()
             with suppress(asyncio.CancelledError):
                 await getter
-            while (event := sink.get_nowait()) is not None:
-                yield _progress_frame(event)
+            while (item := sink.get_nowait()) is not None:
+                yield _frame(item)
             break
 
         elapsed = time.perf_counter() - started
