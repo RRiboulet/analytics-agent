@@ -55,7 +55,12 @@ class AgentServices:
     # one to each analyst sub-run). It already carries the parent's sink and
     # sequence counter, so the nested events continue the parent's single
     # stream instead of restarting at 1 — and they arrive stamped with the
-    # sub-question they belong to. Takes precedence over ``sink``.
+    # sub-question they belong to.
+    #
+    # ``sink`` and ``emitter`` are mutually exclusive: the emitter already owns
+    # a sink, so setting both would leave one of them silently ignored — and a
+    # nested runner that passed ``sink=`` would start a second stream inside a
+    # run that must have exactly one. ``build_graph`` rejects the combination.
     emitter: ProgressEmitter | None = None
 
 
@@ -109,7 +114,20 @@ def _build_schema_text(tables: list[dict[str, Any]], relationships: list[dict[st
 
 
 def build_graph(services: AgentServices) -> Any:
-    """Compile the LangGraph state machine."""
+    """Compile the LangGraph state machine.
+
+    The compiled graph serves exactly one run: its progress sink and event
+    sequence counter bind here, at construction. Build a graph per invocation
+    (D10) — a graph cached across invocations would fuse two runs into one
+    indistinguishable stream and the second run's events would never reach its
+    own consumer.
+    """
+    if services.emitter is not None and services.sink is not None:
+        raise ValueError(
+            "AgentServices takes either an emitter or a sink, not both: the "
+            "emitter already carries the sink of the run it is nested in, so "
+            "passing both would silently drop one of them."
+        )
     # One emitter per graph (i.e. per run): it owns the run's sequence numbers
     # and is a no-op when no sink was injected. A nested run reuses the emitter
     # its parent derived for it, so the run's numbering stays one sequence.
