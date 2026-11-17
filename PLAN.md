@@ -943,6 +943,70 @@ read-only analyst query — measured, not judged only manually (M7.6).
 
 ---
 
+## M8 — Demonstrable surface + parallel manager
+
+Status: complete (2026-11-17). Spec:
+`docs/specs/2026-11-17-m8-parallel-manager-and-web-surface.md`; the work was
+split into nine tickets in `docs/specs/tickets/`.
+
+Goal: make the finished M1–M7 system demonstrable to someone who is not its
+author — a browser surface that streams the manager's pipeline and ends with a
+grounded report, and a pipeline fast enough to watch.
+
+Delivered:
+
+* **Bounded parallel sub-analyses** (and the follow-up round) under
+  `MANAGER_MAX_PARALLELISM` (default 4), evidence indexed by sub-question
+  regardless of completion order, a crashing run settling its siblings before
+  propagating, and per-run MCP call counting replacing snapshot/delta (D2 of the
+  spec) — the old attribution would have double-counted under fan-out.
+* **Progress events** (`app/progress.py`): one additive vocabulary for analyst
+  and manager stages, child emitters sharing a run's single sequence, fail-open
+  like tracing, and a no-sink path that costs nothing.
+* **Loopback web surface** (`app/web/`): one page, one `POST /api/run`
+  streaming SSE progress and a final payload carrying the evidence records,
+  elapsed time and real call counts; analyst and manager modes; a
+  `WEB_MAX_CONCURRENT_RUNS` queue with an explicit `queued` frame; optional
+  `WEB_TOKEN`. `python -m app.web --check` is the CI-friendly smoke test.
+* **MCP server concurrency readiness**: `DB_POOL_MAX_SIZE` (default 10) and
+  metadata embedding moved off the event loop behind a thread-held guard, which
+  also survives cancellation (an asyncio lock released it while ONNX was still
+  running — found by review round 1, fixed with a test that reproduces the race).
+* **Two adversarial review rounds** folded in: the cancellation race and
+  degraded retrieval reported as healthy (round 1); one-graph-per-run pinned in
+  D10, uniform degraded-inspect events, `sink`+`emitter` rejected, dead
+  `CountingCapabilities.delta` removed (round 2). The spec was amended where the
+  review was right about the contract rather than the code (R5/R6 payload split,
+  R10's enforceable half).
+
+Measured (2026-11-17, `opencode`/`deepseek-v4.1-flash` — the same provider and
+model as the M7.6 baseline):
+
+| Metric | M7.6 baseline | M8 |
+|---|---|---|
+| manager scenarios structurally passing | 6/6 | **6/6** |
+| mean latency per management scenario | 366.9 s | **355.7 s** (median 359.8, min 194.1, max 540.1) |
+| MCP calls, whole benchmark | 132 over 33 analyst runs (4.00/run) | **145 over 36 analyst runs** |
+| analyst benchmark | not recorded pre-M8 | **22/30 (73.3%)**, avg 10.9 s, 120 calls, 0 retries |
+
+Overlap is real and was measured directly rather than inferred: in a timestamped
+run, four sub-analyses started within 0.1 s and took 15/33/67/86 s, so the
+sub-analysis stage cost ~86 s instead of ~201 s serial (~2.3x). The end-to-end
+gain is small (~3% mean) because it is bounded by the slowest analyst in the
+wave and because the manager's inspect/synthesis stages stay serial. That is the
+honest result: parallelism is implemented and correct, but on this provider it
+is not what makes the demo usable — the live pipeline view and the analyst mode
+are. A single-process local model server gains nothing from the fan-out.
+
+Commands (from `analytics-agent/`, with the MCP server running):
+
+```bash
+uv run python scripts/run_evaluation.py --out /tmp/m8-eval-analyst
+uv run python scripts/run_manager_evaluation.py --out /tmp/m8-eval-manager
+```
+
+---
+
 # 14. Architectural Principles
 
 The following principles should guide implementation:
@@ -1059,6 +1123,21 @@ with hard budgets bounds latency and failure modes, and grounding the report
 in recorded analyst-run evidence preserves the "never fabricate" property at
 the management level.
 
+**Amendment (M8, 2026-11-17) — parameter 4, the sequential rule.** Sub-analyses
+(and the single follow-up round) now run as bounded parallel fan-out, capped by
+`MANAGER_MAX_PARALLELISM` (default 4); evidence stays ordered by sub-question,
+and per-run call counting replaced the snapshot/delta attribution that was only
+exact while runs were serial. Reason: the manager is what a visitor watches, and
+the M7.6 assumption ("the model server is the bottleneck; parallelism buys
+nothing") holds only for a single-process local server — on a hosted provider
+the four runs overlap (measured: 4 sub-analyses 15/33/67/86 s, stage ~86 s
+instead of ~201 s serial). The end-to-end gain is modest because the wave is
+bounded by its slowest member and the manager's own stages stay serial; that
+is recorded in M8 rather than claimed away. Parameters 1, 2, 3 and 5 stand: the
+pipeline shape, the hard caps, the CLI/`run()` surface (now also a loopback web
+surface, which composes the same entrypoints) and the groundedness gate are
+unchanged.
+
 ---
 
 # 16. Open Questions
@@ -1080,7 +1159,8 @@ These should be resolved during implementation rather than prematurely.
 
 Current milestone:
 
-**M7 — Autonomous Analytics Manager**
+**M8 — Demonstrable surface + parallel manager** (complete; see the M8 section
+above for the design, the measurements and their limits)
 
 Completed:
 
@@ -1109,13 +1189,25 @@ Completed:
 * [x] **M7.6 — Management-level evaluation extension** — structural grading (decomposition validity, follow-up budget, groundedness, completion, per-sub-analysis errors) for management scenarios in the M6 harness; `app/evaluation/manager_dataset.py`, `manager_runner.py`, `scripts/run_manager_evaluation.py`, `data/evaluation/manager_v1.yaml` (6 scenarios); tests; committed on `dev`. Cost is measured, not estimated: the benchmark reports real MCP tool calls per case, per scenario and per analyst sub-run (a delegating `CountingCapabilities` installed at the manager composition root, attributed around each analyst run), so a management request's price is visible in `results.json` and `evidence.json`.
   * **Measured (2026-11-16, `opencode`/`deepseek-v4.1-flash`):** 6/6 scenarios structurally pass; 132 MCP calls over 33 analyst runs = 4.00 calls per run, every scenario exactly 4.00; 0 unattributed calls (per-record sums equal run totals); run-level shape 12 calls (3 runs, no follow-up) to 24 calls (6 runs, both follow-up cap reached); mean latency 366.9s per scenario, whole benchmark ≈ 39 min. The flat 4.00 rate means the analyst's schema discovery is fixed-cost, so a scenario's price tracks its analyst-run count — the follow-up round costs exactly one more analyst run.
 * [x] **M7 Stage A wrap-up** — first live end-to-end manager run against the real LLM (manual); decompose quality and groundedness false positives assessed, then mitigated with stricter extraction + correction retry.
+* [x] **M8 — Demonstrable surface + parallel manager** — nine tickets, spec in `docs/specs/2026-11-17-m8-parallel-manager-and-web-surface.md`:
+  * M8.1 — MCP server concurrency readiness (`DB_POOL_MAX_SIZE`; embedding off the event loop behind a cancellation-safe thread guard).
+  * M8.2 — Analyst progress events (`app/progress.py`, fail-open, no-sink path free).
+  * M8.3 — Parallel sub-analyses (`MANAGER_MAX_PARALLELISM`, default 4) with exact per-run call attribution; the "settle then re-raise" rule keeps a crash clean.
+  * M8.4 — Manager pipeline events on one ordered sequence (child emitters), including degraded-inspect and groundedness verdicts.
+  * M8.5 — Loopback web surface: `POST /api/run` → SSE → final payload with evidence rows, elapsed time and real call counts; `python -m app.web --check`.
+  * M8.6 — Live pipeline rendering (evidence cards with SQL/rows/answer, follow-up round, verdicts, rejected report shown as rejected).
+  * M8.7 — Analyst mode: one question answers inside the same page and stream.
+  * M8.8 — Bounded concurrency with an explicit `queued` frame; slots released on success, failure, raise and disconnect.
+  * M8.9 — Measurements recorded above, D009 amended, READMEs updated.
+  * Two adversarial review rounds folded in (see the M8 section).
 
 Next:
 
-No staged deliverables remain open. Optional follow-up work includes broader
-live manager evaluation coverage, prompt tuning, and deeper performance tuning
-of the local model. No new milestone should be implemented without an explicit
-request.
+No staged deliverables remain open. Optional follow-up work: broader live
+manager evaluation coverage, prompt tuning, a run-history store for the web
+surface, and token/dollar accounting (neither exists today — the surface shows
+elapsed time and MCP calls only). No new milestone should be implemented without
+an explicit request.
 
 # 18. M1 Status & Decisions
 

@@ -18,6 +18,11 @@ A local FastMCP server for querying realistic e-commerce data (the Olist Brazili
 - A standalone **analytics agent** (`app/agent/`, M4) that answers a natural-language question
   end-to-end: retrieve metadata -> generate read-only SQL -> validate -> execute through MCP
   -> analyze -> answer, with bounded retry recovery and optional Langfuse tracing
+- An **autonomous analytics manager** (`app/manager/`, M7) that decomposes a management
+  request into up to four parallel analyst runs, inspects the evidence, and synthesizes a
+  report whose every number is traceable to an executed query
+- A **loopback web surface** (`app/web/`, M8) that streams a run's pipeline live and ends
+  with the grounded report
 
 This is a local demonstration. Authentication, Azure deployment, and write operations are intentionally outside this first version.
 
@@ -153,6 +158,42 @@ change is required. When enabled, each run produces one trace (tagged
 state transitions, both LLM calls (`generate_sql` / `generate_answer`), each MCP tool
 call with arguments and result, retries/errors, and the final answer.
 
+
+## Run the web surface (M8)
+
+`app/web/` serves one page on loopback that streams a run as it happens: the decomposed
+sub-questions, each analysis with its SQL, rows and answer, the follow-up round, the
+groundedness verdict, and the final report with elapsed time and real MCP call counts.
+It is a pure client of the existing entrypoints — it never touches PostgreSQL or SQL, and
+the manager's budgets and groundedness gate are unchanged.
+
+```bash
+uv run python -m app.web            # serves http://127.0.0.1:8001
+uv run python -m app.web --check    # starts, serves the page, exits 0
+```
+
+The page offers two modes: **single question** (analyst, seconds) and **management
+request** (manager, a minute or more). Settings:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WEB_HOST` / `WEB_PORT` | `127.0.0.1` / `8001` | Bind address. Loopback is deliberate: this host exposes only SSH. |
+| `WEB_TOKEN` | unset (off) | Optional shared token, sent as `X-Web-Token` or `?token=`. Off by default because the surface is loopback-only; set it before putting a tunnel in front. |
+| `WEB_MAX_CONCURRENT_RUNS` | `2` | Runs admitted at once. A request beyond the limit receives a `queued` event and starts when a slot frees. |
+
+The web process has no database credentials of its own: runs go through the MCP server,
+which stays the only read-only path to PostgreSQL.
+
+Two execution-shape settings matter for latency:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MANAGER_MAX_PARALLELISM` | `4` | How many analyst sub-runs the manager runs at once (1 reproduces the old serial behaviour). |
+| `DB_POOL_MAX_SIZE` | `10` | asyncpg pool size for the MCP server, so concurrent analyses do not queue on connections. |
+
+The parallel win belongs to the hosted providers: a single-process local model server
+(`llama.cpp` without `--parallel`) still serves one request at a time, so the same code is
+correct there but not faster.
 
 ## Test the MCP server step by step
 
