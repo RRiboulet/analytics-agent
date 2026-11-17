@@ -22,6 +22,17 @@ tool transport failing mid-flight, which the analyst graph deliberately does not
 swallow — produces no result for the caller, but its ``--out`` artifacts are
 still written before the exception propagates, carrying the calls it spent and
 the exception text, so a crash remains diagnosable from disk alone.
+
+The same run can report itself while it runs: ``run_manager(..., sink=...)``
+streams the pipeline (M8, R5) as ordered progress events — request accepted,
+the decomposed sub-questions, each analysis starting and finishing, the inspect
+decision, synthesis, the groundedness verdict, and the terminal status with the
+report. The run's own events and the events of every nested analyst sub-run
+share one monotonically increasing sequence, because each sub-run emits through
+a child of the manager run's emitter (rather than a counter of its own).
+Emission is fail-open (a raising sink changes nothing about the run) and absent
+by default. A run that raises emits no terminal event: its stream simply ends,
+and a consumer treats the end of the stream as terminal.
 """
 
 import asyncio
@@ -42,9 +53,11 @@ from app.manager.graph import (
     DEFAULT_MAX_PARALLELISM,
     ManagerServices,
     build_manager_graph,
+    manager_failure_reason,
 )
 from app.manager.llm import create_manager_llm
-from app.manager.state import ManagerState, ManagerStatus
+from app.manager.state import ManagerState
+from app.progress import ProgressEmitter, ProgressSink
 
 
 @dataclass
@@ -74,16 +87,13 @@ class ManagerRunResult:
 
 
 def _run_error(state: ManagerState) -> str | None:
-    """Caller-facing error for a manager run (None when nothing failed)."""
-    if state.get("decomposition_error"):
-        return state["decomposition_error"]
-    if state.get("groundedness_error"):
-        return state["groundedness_error"]
-    if state.get("llm_error"):
-        return state["llm_error"]
-    if state.get("status") is ManagerStatus.FAILED and state.get("sub_analysis_errors"):
-        return state["sub_analysis_errors"][0]
-    return None
+    """Caller-facing error for a manager run (None when nothing failed).
+
+    Delegates to the graph's definition, which the run's terminal progress
+    event also uses: the caller and the live view cannot disagree about why a
+    run failed.
+    """
+    return manager_failure_reason(state)
 
 
 async def _run_request(
@@ -97,6 +107,7 @@ async def _run_request(
     max_rows: int,
     tracer: AgentTracer | None,
     manager_max_parallelism: int = DEFAULT_MAX_PARALLELISM,
+    sink: ProgressSink | None = None,
 ) -> ManagerState:
     """Run one management request end-to-end with injected dependencies.
 
@@ -109,10 +120,19 @@ async def _run_request(
     run spent even when runs overlap. When the caller installed a counter at
     this level too (``run_manager`` does), that outer wrapper additionally
     reports the whole run's total.
+
+    ``sink`` is the run's progress channel (M8, R5). The manager graph owns
+    the run's emitter, and each analyst sub-run is handed the child emitter the
+    graph derived for it, so nested events are labelled with their sub-question
+    and continue the same sequence.
     """
     config = tracer.run_config(request) if tracer is not None else None
 
-    async def run_analyst(question: str, surface: Capabilities | None = None) -> AgentState:
+    async def run_analyst(
+        question: str,
+        surface: Capabilities | None = None,
+        emitter: ProgressEmitter | None = None,
+    ) -> AgentState:
         # One analyst graph per sub-run: the capability surface is per-run
         # (a fresh counter), so the compiled graph cannot be shared. Graph
         # construction is pure wiring; the model and MCP calls dominate cost.
@@ -121,6 +141,9 @@ async def _run_request(
             capabilities=surface if surface is not None else capabilities,
             max_attempts=analyst_max_attempts,
             max_rows=max_rows,
+            # The emitter the manager derived for THIS sub-run: same stream and
+            # counter as the manager run, stamped with this sub-question.
+            emitter=emitter,
         )
         analyst_graph = build_graph(analyst_services)
         return await analyst_graph.ainvoke(
@@ -133,13 +156,23 @@ async def _run_request(
         max_attempts=manager_max_attempts,
         max_parallelism=manager_max_parallelism,
         capabilities=capabilities,
+        sink=sink,
     )
     manager_graph = build_manager_graph(manager_services)
     return await manager_graph.ainvoke({"request": request}, config=config)
 
 
-async def run_manager(request: str, out_dir: str | Path | None = None) -> ManagerRunResult:
-    """Run the analytics manager end-to-end and return a concise result."""
+async def run_manager(
+    request: str, out_dir: str | Path | None = None, *, sink: ProgressSink | None = None
+) -> ManagerRunResult:
+    """Run the analytics manager end-to-end and return a concise result.
+
+    ``sink`` is the optional progress channel (additive, keyword-only): when
+    supplied, the run streams its pipeline through it, fail-open, as one ordered
+    sequence including the nested analyst events. With no sink the run is
+    exactly what it was before (no emission, no cost) — the CLI and library
+    paths pass nothing.
+    """
     settings = get_settings()
     llm = create_manager_llm()
     # One counting wrapper around the single capability instance: CLI, library
@@ -163,6 +196,7 @@ async def run_manager(request: str, out_dir: str | Path | None = None) -> Manage
             max_rows=settings.max_rows,
             manager_max_parallelism=settings.manager_max_parallelism,
             tracer=tracer,
+            sink=sink,
         )
     except Exception as error:
         # Keep the failure text for the artifact below, then let it propagate:
