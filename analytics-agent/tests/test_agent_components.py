@@ -18,6 +18,7 @@ from app.agent.graph import AgentServices, build_graph
 from app.agent.llm import FakeLLM, LLMClient, LLMError, _request_payload, create_llm
 from app.agent.tracing import PROJECT_ENV_PATH, AgentTracer, callbacks_for
 from app.config import Settings, get_settings
+from app.progress import NullSink, ProgressEmitter, ProgressEvent, ProgressEventType
 
 # ---------------------------------------------------------------------------
 # Entrypoint CLI / run_agent
@@ -749,3 +750,96 @@ def test_tracer_flushes_created_handler(monkeypatch) -> None:
     tracer.callbacks()
     tracer.flush()
     assert flushed == [True]
+
+
+# ---------------------------------------------------------------------------
+# Progress events: event shape, emitter sequencing, fail-open delivery (M8)
+# ---------------------------------------------------------------------------
+
+
+def test_progress_event_as_dict_keeps_set_fields_only() -> None:
+    event = ProgressEvent(
+        type=ProgressEventType.SQL_EXECUTED, seq=3, attempt=1, sql="SELECT 1", row_count=0
+    )
+    assert event.as_dict() == {
+        "type": "sql.executed",
+        "seq": 3,
+        "attempt": 1,
+        "sql": "SELECT 1",
+        "row_count": 0,
+    }
+    # Unset (None) fields are omitted, not serialised as nulls.
+    assert "answer" not in event.as_dict()
+
+
+def test_progress_emitter_assigns_monotonic_sequence_numbers() -> None:
+    recorded: list[ProgressEvent] = []
+
+    class Sink:
+        def emit(self, event: ProgressEvent) -> None:
+            recorded.append(event)
+
+    emitter = ProgressEmitter(Sink())
+    assert emitter.enabled is True
+    emitter.emit(ProgressEventType.RUN_STARTED, question="Q")
+    emitter.emit(ProgressEventType.RUN_COMPLETED, status="completed", answer="a")
+
+    assert [event.seq for event in recorded] == [1, 2]
+    assert [event.type for event in recorded] == ["run.started", "run.completed"]
+    assert emitter.seq == 2
+
+
+def test_progress_emitter_without_a_sink_costs_nothing() -> None:
+    emitter = ProgressEmitter()
+    assert emitter.enabled is False
+    assert emitter.emit(ProgressEventType.RUN_STARTED, question="Q") is None
+    assert emitter.seq == 0
+
+
+def test_progress_emitter_swallows_sink_errors_and_keeps_numbering() -> None:
+    """Fail-open (R10): a raising sink is swallowed; sequencing stays consistent."""
+
+    class BoomSink:
+        def emit(self, event: ProgressEvent) -> None:
+            raise RuntimeError("sink exploded")
+
+    emitter = ProgressEmitter(BoomSink())
+    assert emitter.emit(ProgressEventType.RUN_STARTED) is not None
+    assert emitter.emit(ProgressEventType.METADATA_RETRIEVED) is not None
+    assert emitter.seq == 2
+
+
+def test_null_sink_discards_events() -> None:
+    assert NullSink().emit(ProgressEvent(type="run.started", seq=1)) is None
+
+
+@pytest.mark.asyncio
+async def test_run_agent_with_raising_sink_matches_no_sink(monkeypatch) -> None:
+    """R10 at the public seam: status, answer and error are unaffected."""
+
+    class FailingQuery:
+        async def call_tool(self, name, args=None):  # type: ignore[no-untyped-def]
+            if name == "query":
+                return {"valid": False, "message": "Query failed: bad column", "entries": []}
+            return {"valid": True, "message": "ok", "entries": []}
+
+        async def close(self):  # type: ignore[no-untyped-def]
+            pass
+
+    class BoomSink:
+        def emit(self, event: ProgressEvent) -> None:
+            raise RuntimeError("sink exploded")
+
+    monkeypatch.setattr(entrypoint, "create_llm", FakeLLM)
+    monkeypatch.setattr(entrypoint, "MCPCapabilities", FailingQuery)
+    plain = await entrypoint.run_agent("Q")
+    guarded = await entrypoint.run_agent("Q", sink=BoomSink())
+
+    assert (guarded.status, guarded.answer, guarded.error) == (
+        plain.status,
+        plain.answer,
+        plain.error,
+    )
+    assert plain.status == "failed"
+    assert plain.answer is None
+    assert "bad column" in (plain.error or "")
