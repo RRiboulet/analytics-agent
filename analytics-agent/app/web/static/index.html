@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Analytics manager</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f7f7f5;
+        --fg: #1d1d1b;
+        --muted: #6b6b66;
+        --line: #d9d9d4;
+        --accent: #2f6f4f;
+        --danger: #a33a2b;
+        --panel: #ffffff;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #141514;
+          --fg: #ecece8;
+          --muted: #9b9b94;
+          --line: #33342f;
+          --accent: #7cc49a;
+          --danger: #e08a78;
+          --panel: #1c1d1b;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+      }
+      main { max-width: 900px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+      h1 { font-size: 1.35rem; margin: 0 0 0.25rem; }
+      h2 { font-size: 1rem; margin: 1.75rem 0 0.5rem; }
+      .lede { color: var(--muted); margin: 0 0 1.5rem; }
+      form { display: grid; gap: 0.6rem; }
+      label { font-weight: 600; }
+      textarea {
+        width: 100%;
+        min-height: 5.5rem;
+        padding: 0.65rem 0.75rem;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        color: inherit;
+        font: inherit;
+        resize: vertical;
+      }
+      button {
+        justify-self: start;
+        padding: 0.5rem 1.1rem;
+        border: 1px solid var(--accent);
+        border-radius: 6px;
+        background: var(--accent);
+        color: var(--bg);
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      button:disabled { opacity: 0.55; cursor: progress; }
+      #status {
+        margin: 1.25rem 0 0;
+        padding: 0.55rem 0.75rem;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--muted);
+      }
+      #status[data-state="running"] { color: var(--fg); }
+      #status[data-state="completed"] { color: var(--accent); border-color: var(--accent); }
+      #status[data-state="failed"] { color: var(--danger); border-color: var(--danger); }
+      #events {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        max-height: 22rem;
+        overflow: auto;
+        font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      #events:empty::after {
+        content: "Events appear here as the run progresses.";
+        display: block;
+        padding: 0.75rem;
+        color: var(--muted);
+      }
+      #events .event {
+        display: flex;
+        gap: 0.6rem;
+        padding: 0.35rem 0.75rem;
+        border-bottom: 1px solid var(--line);
+      }
+      #events .event:last-child { border-bottom: 0; }
+      #events .event-type { flex: 0 0 13.5rem; color: var(--accent); }
+      #events .event-detail { color: var(--fg); overflow-wrap: anywhere; }
+      .summary { display: flex; flex-wrap: wrap; gap: 1.25rem; color: var(--muted); }
+      .summary strong { color: var(--fg); font-weight: 600; }
+      #final-error { color: var(--danger); overflow-wrap: anywhere; }
+      #report {
+        margin: 0.5rem 0 0;
+        padding: 1rem;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--panel);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Analytics manager</h1>
+      <p class="lede">
+        Submit a management request. The run's progress streams in below and ends with the
+        grounded report, its elapsed time and the MCP calls it spent.
+      </p>
+
+      <!-- data-mode values are the server's RunMode names; ticket 07 turns this
+           hidden input into a single-question / management-request choice. -->
+      <form id="run-form" data-endpoint="/api/run" data-mode="manager">
+        <input id="mode" name="mode" type="hidden" value="manager" />
+        <label for="request">Management request</label>
+        <textarea
+          id="request"
+          name="request"
+          required
+          placeholder="Which product categories drive the most revenue?"
+        ></textarea>
+        <button id="submit" type="submit">Run</button>
+      </form>
+
+      <p id="status" data-state="idle" role="status" aria-live="polite">
+        Not started.
+      </p>
+
+      <!-- Ticket 06 renders the live pipeline here. This plain event log is the
+           shell: each row carries data-event-type / data-seq / data-index so the
+           rich renderer can replace the rendering without changing the stream. -->
+      <section id="pipeline" data-renderer="plain">
+        <h2>Progress</h2>
+        <ol id="events" aria-live="polite"></ol>
+      </section>
+
+      <section id="result" hidden>
+        <h2>Result</h2>
+        <p class="summary">
+          <span>Status <strong id="final-status"></strong></span>
+          <span>Elapsed <strong id="final-elapsed"></strong></span>
+          <span>MCP calls <strong id="final-tool-calls"></strong></span>
+        </p>
+        <p id="final-error" hidden></p>
+        <pre id="report"></pre>
+      </section>
+    </main>
+
+    <script>
+      (() => {
+        "use strict";
+
+        const endpoint = "/api/run";
+        const form = document.getElementById("run-form");
+        const requestBox = document.getElementById("request");
+        const submit = document.getElementById("submit");
+        const statusLine = document.getElementById("status");
+        const eventsList = document.getElementById("events");
+        const result = document.getElementById("result");
+        const reportBox = document.getElementById("report");
+        const finalStatus = document.getElementById("final-status");
+        const finalElapsed = document.getElementById("final-elapsed");
+        const finalToolCalls = document.getElementById("final-tool-calls");
+        const finalError = document.getElementById("final-error");
+
+        // A visitor who opened the page with ?token=... has the optional shared
+        // token forwarded as a header on the POST. No token -> no header, and
+        // the server accepts when WEB_TOKEN is unset.
+        const token = new URLSearchParams(window.location.search).get("token");
+
+        function setStatus(text, state) {
+          statusLine.textContent = text;
+          statusLine.dataset.state = state;
+        }
+
+        function seconds(value) {
+          return `${Number(value || 0).toFixed(1)} s`;
+        }
+
+        function reset() {
+          eventsList.replaceChildren();
+          reportBox.textContent = "";
+          finalStatus.textContent = "";
+          finalElapsed.textContent = "";
+          finalToolCalls.textContent = "";
+          finalError.textContent = "";
+          finalError.hidden = true;
+          result.hidden = true;
+        }
+
+        // One readable row per event type (ticket 06 replaces this rendering).
+        function summarize(data) {
+          const parts = [];
+          if (data.index !== undefined) {
+            parts.push(data.is_follow_up ? `follow-up ${data.index}` : `analysis ${data.index}`);
+          }
+          if (data.question) parts.push(data.question);
+          if (data.attempt !== undefined) parts.push(`attempt ${data.attempt}`);
+          if (data.status) parts.push(`status ${data.status}`);
+          if (data.row_count !== undefined) parts.push(`${data.row_count} row(s)`);
+          if (data.reason) parts.push(data.reason);
+          if (data.error) parts.push(`error: ${data.error}`);
+          return parts.join(" · ");
+        }
+
+        function appendEvent(data) {
+          const row = document.createElement("li");
+          row.className = "event";
+          row.dataset.eventType = data.type;
+          if (data.seq !== undefined) row.dataset.seq = String(data.seq);
+          if (data.index !== undefined) row.dataset.index = String(data.index);
+          if (data.is_follow_up !== undefined) {
+            row.dataset.isFollowUp = String(data.is_follow_up);
+          }
+          const type = document.createElement("span");
+          type.className = "event-type";
+          type.textContent = data.type;
+          const detail = document.createElement("span");
+          detail.className = "event-detail";
+          detail.textContent = summarize(data);
+          row.append(type, detail);
+          eventsList.append(row);
+          row.scrollIntoView({ block: "nearest" });
+        }
+
+        function callTotals(toolCalls) {
+          const entries = Object.entries(toolCalls || {}).sort((a, b) => b[1] - a[1]);
+          const total = entries.reduce((sum, entry) => sum + entry[1], 0);
+          if (!entries.length) return String(total);
+          return `${total} (${entries.map(([name, count]) => `${name} ${count}`).join(", ")})`;
+        }
+
+        function showFinal(data) {
+          result.hidden = false;
+          finalStatus.textContent = data.status || "unknown";
+          finalElapsed.textContent = seconds(data.elapsed_seconds);
+          finalToolCalls.textContent = callTotals(data.tool_calls);
+          reportBox.textContent = data.report || "";
+          if (data.error) {
+            finalError.textContent = data.error;
+            finalError.hidden = false;
+          }
+          if (data.status === "completed") {
+            setStatus(`Completed in ${seconds(data.elapsed_seconds)}.`, "completed");
+          } else {
+            setStatus(`Finished with status ${data.status || "unknown"}.`, "failed");
+          }
+        }
+
+        function showFailed(data) {
+          result.hidden = false;
+          finalStatus.textContent = "failed";
+          finalElapsed.textContent = seconds(data.elapsed_seconds);
+          finalToolCalls.textContent = callTotals(data.tool_calls);
+          finalError.textContent = data.error || "the run failed";
+          finalError.hidden = false;
+          reportBox.textContent = "";
+          setStatus(`Failed: ${data.error || "the run failed"}`, "failed");
+        }
+
+        function handleFrame(name, payload) {
+          if (name === "progress") appendEvent(payload);
+          else if (name === "final") showFinal(payload);
+          else if (name === "failed") showFailed(payload);
+        }
+
+        // SSE framing: fields are separated by CRLF, frames by a blank line.
+        function takeFrame(buffer) {
+          const separator = buffer.match(/\r?\n\r?\n/);
+          if (!separator) return null;
+          return {
+            raw: buffer.slice(0, separator.index),
+            rest: buffer.slice(separator.index + separator[0].length),
+          };
+        }
+
+        function parseFrame(raw) {
+          let name = "message";
+          const data = [];
+          for (const line of raw.split(/\r?\n/)) {
+            if (!line || line.startsWith(":")) continue;
+            const colon = line.indexOf(":");
+            const field = colon === -1 ? line : line.slice(0, colon);
+            const value = colon === -1 ? "" : line.slice(colon + 1).replace(/^ /, "");
+            if (field === "event") name = value;
+            else if (field === "data") data.push(value);
+          }
+          if (!data.length) return null;
+          return { name, payload: JSON.parse(data.join("\n")) };
+        }
+
+        async function readStream(response) {
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            for (let frame = takeFrame(buffer); frame; frame = takeFrame(buffer)) {
+              buffer = frame.rest;
+              const parsed = parseFrame(frame.raw);
+              if (parsed) handleFrame(parsed.name, parsed.payload);
+            }
+          }
+        }
+
+        async function errorMessage(response) {
+          try {
+            const body = await response.json();
+            return body.error || `HTTP ${response.status}`;
+          } catch (_) {
+            return `HTTP ${response.status}`;
+          }
+        }
+
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const text = requestBox.value.trim();
+          if (!text) return;
+
+          reset();
+          submit.disabled = true;
+          setStatus("Running…", "running");
+          try {
+            const headers = {
+              "Content-Type": "application/json",
+              Accept: "text/event-stream",
+            };
+            if (token) headers["X-Web-Token"] = token;
+            const response = await fetch(endpoint, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({
+                request: text,
+                mode: form.elements.mode.value,
+              }),
+            });
+            if (!response.ok) throw new Error(await errorMessage(response));
+            await readStream(response);
+          } catch (error) {
+            showFailed({ status: "failed", error: error.message });
+          } finally {
+            submit.disabled = false;
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>

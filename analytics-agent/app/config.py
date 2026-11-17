@@ -141,6 +141,20 @@ class Settings(BaseSettings):
         default=4, validation_alias="MANAGER_MAX_PARALLELISM", ge=1
     )
 
+    # ------------------------------------------------------------------
+    # Web surface (M8)
+    # ------------------------------------------------------------------
+
+    # Loopback by default: the demo surface is for this host, whose policy is
+    # that SSH is its only open port. 8001 avoids the MCP server's 8000.
+    web_host: str = Field(default="127.0.0.1", validation_alias="WEB_HOST")
+    web_port: int = Field(default=8001, validation_alias="WEB_PORT", ge=1, le=65535)
+    # Optional shared token for the run endpoint. Unset (the default) disables
+    # the check; when set, a request must carry it as an ``X-Web-Token`` header
+    # or a ``token`` query parameter, compared in constant time. It is never a
+    # database or model credential and is never echoed in a response or a log.
+    web_token: str | None = Field(default=None, validation_alias="WEB_TOKEN")
+
 
 @lru_cache
 def get_settings() -> Settings:
