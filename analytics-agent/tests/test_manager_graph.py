@@ -7,6 +7,7 @@ Fully hermetic: FakeManagerLLM plus a stub analyst runner; no network, no
 database, no live model.
 """
 
+from app.agent.capabilities import CountingCapabilities
 from app.agent.llm import LLMError
 from app.agent.state import AgentState, AgentStatus
 from app.manager.decompose import MAX_SUB_QUESTIONS
@@ -53,18 +54,64 @@ class StubAnalyst:
         return self.scripts[question]
 
 
+class StubCapability:
+    """Minimal read-only capability stub: accepts any call, returns a valid result."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def call_tool(self, name: str, args=None) -> dict:
+        self.calls.append(name)
+        return {"valid": True, "message": "ok", "entries": []}
+
+
+def _counter() -> CountingCapabilities:
+    """The production counter over a stub capability (no second implementation)."""
+    return CountingCapabilities(StubCapability())
+
+
+class CountingAnalyst(StubAnalyst):
+    """Analyst stub that spends a scripted number of tool calls per run.
+
+    ``spend`` maps a question to the calls spent by each successive run of it,
+    so a follow-up question can cost something different from the first run.
+    The calls go through the real counter, exactly as they do in production.
+    """
+
+    def __init__(
+        self,
+        scripts: dict[str, AgentState],
+        counter: CountingCapabilities,
+        spend: dict[str, list[dict[str, int]]],
+    ) -> None:
+        super().__init__(scripts)
+        self.counter = counter
+        self.spend = spend
+        self._runs: dict[str, int] = {}
+
+    async def __call__(self, question: str) -> AgentState:
+        run = self._runs.get(question, 0)
+        self._runs[question] = run + 1
+        for name, count in self.spend[question][run].items():
+            for _ in range(count):
+                await self.counter.call_tool(name)
+        return await super().__call__(question)
+
+
 def _services(
     llm: FakeManagerLLM,
     analyst: StubAnalyst | None = None,
     *,
     max_attempts: int = 2,
     table_names: list[str] | None = None,
+    tool_call_counter: CountingCapabilities | None = None,
 ) -> ManagerServices:
     return ManagerServices(
         llm=llm,
         run_analyst=analyst or StubAnalyst({}),
         max_attempts=max_attempts,
         table_names=table_names or ["orders", "order_items"],
+        tool_call_counter=tool_call_counter,
     )
 
 
@@ -100,6 +147,50 @@ async def test_happy_path_accumulates_ordered_evidence() -> None:
     assert state["sub_analysis_errors"] == []
     assert state["decomposition_error"] is None
     assert state["llm_error"] is None
+
+
+async def test_evidence_records_carry_each_runs_tool_calls() -> None:
+    counter = _counter()
+    analyst = CountingAnalyst(
+        {"Revenue by category?": _ok_sub_state(), "Top sellers?": _ok_sub_state()},
+        counter,
+        {
+            "Revenue by category?": [{"query": 2, "list_tables": 1}],
+            "Top sellers?": [{"query": 1}],
+        },
+    )
+    llm = FakeManagerLLM(raw="Revenue by category?\nTop sellers?")
+    state = await _invoke(_services(llm, analyst, tool_call_counter=counter))
+
+    records = state["evidence"]
+    assert [r.tool_calls for r in records] == [
+        {"query": 2, "list_tables": 1},
+        {"query": 1},
+    ]
+    # Attribution is complete: nothing the run spent is left unattributed.
+    assert sum(sum(r.tool_calls.values()) for r in records) == sum(counter.snapshot().values())
+
+
+async def test_failed_sub_analysis_still_carries_its_tool_calls() -> None:
+    counter = _counter()
+    analyst = CountingAnalyst(
+        {"Bad question?": _failed_sub_state("LLM request timed out")},
+        counter,
+        {"Bad question?": [{"query": 3}]},
+    )
+    llm = FakeManagerLLM(raw="Bad question?")
+    state = await _invoke(_services(llm, analyst, tool_call_counter=counter))
+
+    assert state["evidence"][0].error is not None
+    assert state["evidence"][0].tool_calls == {"query": 3}
+
+
+async def test_records_carry_no_counts_without_a_counter() -> None:
+    analyst = StubAnalyst({"One?": _ok_sub_state()})
+    llm = FakeManagerLLM(raw="One?")
+    state = await _invoke(_services(llm, analyst))
+
+    assert state["evidence"][0].tool_calls == {}
 
 
 async def test_partial_failure_is_recorded_and_run_continues() -> None:

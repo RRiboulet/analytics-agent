@@ -3,6 +3,7 @@ artifact writing and tracer-config propagation — all with fakes, no network,
 no database, no live model, no telemetry export (conftest strips the keys).
 """
 
+import inspect
 import json
 import subprocess
 import sys as _sys
@@ -52,6 +53,21 @@ class FakeCaps:
 
     async def close(self):
         pass
+
+
+class RecordingCaps(FakeCaps):
+    """FakeCaps that records the tool calls it receives, and its own close."""
+
+    def __init__(self) -> None:
+        self.calls: dict[str, int] = {}
+        self.closed = False
+
+    async def call_tool(self, name, args=None):
+        self.calls[name] = self.calls.get(name, 0) + 1
+        return await super().call_tool(name, args)
+
+    async def close(self):
+        self.closed = True
 
 
 class StubTracer:
@@ -132,6 +148,18 @@ async def test_run_request_passes_tracer_config_to_both_graphs(monkeypatch) -> N
     assert captured_analyst["state"]["question"] == "Summarize sales."
 
 
+def _install_recording_caps(monkeypatch) -> dict:
+    """Install a recording fake at the entrypoint composition seam."""
+    created: dict = {}
+
+    def factory() -> RecordingCaps:
+        created["caps"] = RecordingCaps()
+        return created["caps"]
+
+    monkeypatch.setattr(entrypoint, "MCPCapabilities", factory)
+    return created
+
+
 async def test_run_manager_end_to_end_with_fake_components(monkeypatch) -> None:
     monkeypatch.setattr(entrypoint, "create_manager_llm", FakeFullLLM)
     monkeypatch.setattr(entrypoint, "MCPCapabilities", FakeCaps)
@@ -147,6 +175,108 @@ async def test_run_manager_end_to_end_with_fake_components(monkeypatch) -> None:
     assert len(result.sub_questions) >= 1
     assert len(result.evidence) == len(result.sub_questions)
     assert result.attempts == 1
+
+
+async def test_run_manager_reports_tool_calls_with_no_new_argument(monkeypatch) -> None:
+    # Counting is installed at the composition root: callers keep calling
+    # run_manager(request) and only request is required.
+    required = [
+        name
+        for name, parameter in inspect.signature(run_manager).parameters.items()
+        if parameter.default is inspect.Parameter.empty
+        and parameter.kind is not inspect.Parameter.VAR_KEYWORD
+    ]
+    assert required == ["request"]
+
+    monkeypatch.setattr(entrypoint, "create_manager_llm", FakeFullLLM)
+    created = _install_recording_caps(monkeypatch)
+
+    result = await run_manager("Summarize sales.")
+
+    assert result.status == "completed"
+    # The counts are exactly the calls the workflow made through the wrapper.
+    assert result.tool_calls
+    assert result.tool_calls == created["caps"].calls
+    assert set(result.tool_calls) <= {
+        "search_metadata",
+        "list_tables",
+        "get_relationships",
+        "describe_table",
+        "get_sample_rows",
+        "query",
+    }
+
+
+async def test_evidence_records_are_attributed_to_the_run_total(monkeypatch, tmp_path) -> None:
+    # Whatever a manager run costs must be locatable: per analyst sub-run in the
+    # evidence, and the run total must reconcile with those records.
+    monkeypatch.setattr(entrypoint, "create_manager_llm", FakeFullLLM)
+    created = _install_recording_caps(monkeypatch)
+
+    result = await run_manager("Summarize sales.", tmp_path)
+
+    assert result.evidence
+    assert all(record.tool_calls for record in result.evidence)
+    assert sum(sum(r.tool_calls.values()) for r in result.evidence) == sum(
+        result.tool_calls.values()
+    )
+    assert created["caps"].calls == result.tool_calls  # nothing unattributed
+
+    payload = json.loads((tmp_path / "evidence.json").read_text(encoding="utf-8"))
+    assert payload["total_tool_calls"] > 0
+    assert payload["unattributed_tool_calls"] == 0  # no calls fell outside a record
+    assert payload["total_tool_calls"] == sum(
+        sum(record["tool_calls"].values()) for record in payload["evidence"]
+    )
+
+
+async def test_run_manager_writes_artifacts_when_the_run_crashes(monkeypatch, tmp_path) -> None:
+    # A crash must still leave a trace: the calls it spent and the exception the
+    # caller is about to see. Otherwise a mid-run transport failure destroys
+    # exactly the evidence needed to diagnose it.
+    monkeypatch.setattr(entrypoint, "create_manager_llm", FakeFullLLM)
+    _install_recording_caps(monkeypatch)
+
+    async def crashing_request(request, **kwargs):
+        await kwargs["capabilities"].call_tool("query", {"sql": "SELECT 1"})
+        raise RuntimeError("mcp handshake failed")
+
+    monkeypatch.setattr(entrypoint, "_run_request", crashing_request)
+
+    with pytest.raises(RuntimeError, match="mcp handshake failed"):
+        await run_manager("Summarize sales.", tmp_path)
+
+    payload = json.loads((tmp_path / "evidence.json").read_text(encoding="utf-8"))
+    assert payload["error"] == "RuntimeError: mcp handshake failed"
+    assert payload["total_tool_calls"] == 1
+    assert payload["evidence"] == []
+
+
+async def test_run_manager_reports_counts_on_a_failed_run(monkeypatch) -> None:
+    monkeypatch.setattr(
+        entrypoint,
+        "create_manager_llm",
+        lambda: FakeFullLLM(raw="Revenue?", report="Revenue was 999.99."),
+    )
+    created = _install_recording_caps(monkeypatch)
+
+    result = await run_manager("Summarize sales.")
+
+    assert result.status == "failed"
+    assert result.error is not None
+    # Cost attribution matters most when the run goes wrong.
+    assert result.tool_calls
+    assert result.tool_calls == created["caps"].calls
+
+
+async def test_run_manager_closes_the_underlying_capabilities(monkeypatch) -> None:
+    monkeypatch.setattr(entrypoint, "create_manager_llm", FakeFullLLM)
+    created = _install_recording_caps(monkeypatch)
+
+    await run_manager("Summarize sales.")
+
+    # close() reaches the wrapped object through attribute forwarding.
+    assert created["caps"].closed
 
 
 async def test_run_manager_surfaces_groundedness_error(monkeypatch) -> None:
@@ -223,7 +353,7 @@ async def test_write_artifacts_report_and_evidence(tmp_path) -> None:
             )
         ],
     }
-    entrypoint._write_artifacts(tmp_path, "Summarize sales.", state)
+    entrypoint._write_artifacts(tmp_path, "Summarize sales.", state, {"query": 1})
 
     report = (tmp_path / "report.md").read_text(encoding="utf-8")
     assert report.startswith("# Report")
@@ -232,6 +362,7 @@ async def test_write_artifacts_report_and_evidence(tmp_path) -> None:
     assert payload["status"] == "completed"
     assert payload["evidence"][0]["sub_question"] == "Q1?"
     assert payload["evidence"][0]["rows"] == [{"revenue": 10.5}]
+    assert payload["total_tool_calls"] == 1
 
 
 async def test_write_artifacts_failed_run_has_no_report_file(tmp_path) -> None:
@@ -245,7 +376,7 @@ async def test_write_artifacts_failed_run_has_no_report_file(tmp_path) -> None:
         "report_attempt": "Revenue was 999.99.",
         "evidence": [],
     }
-    entrypoint._write_artifacts(tmp_path, "Summarize sales.", state)
+    entrypoint._write_artifacts(tmp_path, "Summarize sales.", state, {})
 
     assert not (tmp_path / "report.md").exists()  # never ship a fabricated report
     payload = json.loads((tmp_path / "evidence.json").read_text(encoding="utf-8"))
@@ -264,6 +395,19 @@ async def test_run_manager_writes_out_dir(monkeypatch, tmp_path) -> None:
     assert result.status == "completed"
     assert (tmp_path / "evidence.json").exists()
     assert (tmp_path / "report.md").exists()
+
+
+async def test_run_manager_writes_tool_call_total_to_evidence(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(entrypoint, "create_manager_llm", FakeFullLLM)
+    _install_recording_caps(monkeypatch)
+
+    result = await run_manager("Summarize sales.", out_dir=tmp_path)
+
+    payload = json.loads((tmp_path / "evidence.json").read_text(encoding="utf-8"))
+    assert result.tool_calls
+    assert payload["tool_calls"] == result.tool_calls
+    assert payload["total_tool_calls"] == sum(result.tool_calls.values())
+    assert payload["total_tool_calls"] > 0
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +438,7 @@ def _patched_run_manager(monkeypatch) -> ManagerRunResult:
             evidence=[EvidenceRecord(0, "Q1?"), EvidenceRecord(1, "Q2?")],
             attempts=1,
             state={"status": ManagerStatus.COMPLETED},
+            tool_calls={"query": 6, "list_tables": 3},
             error=None,
         )
 
@@ -305,6 +450,7 @@ def _patched_run_manager(monkeypatch) -> ManagerRunResult:
         evidence=[EvidenceRecord(0, "Q1?"), EvidenceRecord(1, "Q2?")],
         attempts=1,
         state={"status": ManagerStatus.COMPLETED},
+        tool_calls={"query": 6, "list_tables": 3},
         error=None,
     )
 
@@ -315,6 +461,7 @@ def test_main_json_output(monkeypatch, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "completed"
     assert payload["sub_questions"] == ["Q1?", "Q2?"]
+    assert payload["tool_calls"] == {"query": 6, "list_tables": 3}
     assert payload["error"] is None
 
 
@@ -326,6 +473,24 @@ def test_main_plain_output(monkeypatch, capsys) -> None:
     assert "Sub-analyses: 2" in out
     assert "  - Q1?" in out
     assert "# Report" in out
+    assert "MCP calls: 9 (query 6, list_tables 3)" in out
+
+
+def test_main_plain_output_reports_zero_calls(monkeypatch, capsys) -> None:
+    async def fake_run_manager(request, out_dir=None):
+        return ManagerRunResult(
+            report=None,
+            status="failed",
+            sub_questions=[],
+            evidence=[],
+            attempts=1,
+            state={},
+            error="x",
+        )
+
+    monkeypatch.setattr(entrypoint, "run_manager", fake_run_manager)
+    entrypoint.main(["Summarize sales."])
+    assert "MCP calls: 0" in capsys.readouterr().out
 
 
 def test_main_plain_output_without_report(monkeypatch, capsys) -> None:
@@ -345,6 +510,7 @@ def test_main_plain_output_without_report(monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert "Status: failed" in out
     assert "Error: bad plan" in out
+    assert "MCP calls: 0" in out
     assert "(no report produced)" in out
 
 

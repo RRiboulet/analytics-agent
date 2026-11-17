@@ -4,6 +4,12 @@ Every case is a genuine agent run (real LLM, real MCP boundary). Judging is
 deterministic: a case passes when the run completed AND the agent's result set
 matches the reference SQL's result set. Structural metrics (attempts, tool
 calls, latency, table relevance) are recorded alongside for reporting.
+
+``CountingCapabilities`` now lives in the agent capability layer, next to the
+protocol it decorates, because the manager harness needs it too. It is
+re-exported here so the previous import path keeps working for anything that
+still uses it; the analyst runner itself reads its counts through
+``snapshot()``, the same accessor the manager uses.
 """
 
 import time
@@ -11,32 +17,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.agent.capabilities import Capabilities
+from app.agent.capabilities import Capabilities, CountingCapabilities
 from app.agent.entrypoint import _run_question
 from app.agent.llm import LLM
 from app.agent.state import AgentState, AgentStatus
 from app.evaluation.dataset import EvalCase
 from app.evaluation.judges import compare_result_sets, referenced_tables
-
-
-class CountingCapabilities:
-    """Wraps the MCP capabilities and counts calls per tool.
-
-    Delegating wrapper only: the underlying transport, results, and read-only
-    boundary are untouched. Other attribute access is forwarded so the same
-    lifecycle methods (e.g. ``close``) remain reachable.
-    """
-
-    def __init__(self, inner: Capabilities) -> None:
-        self._inner = inner
-        self.calls: dict[str, int] = {}
-
-    async def call_tool(self, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
-        self.calls[name] = self.calls.get(name, 0) + 1
-        return await self._inner.call_tool(name, args)
-
-    def __getattr__(self, item: str) -> Any:
-        return getattr(self._inner, item)
 
 
 @dataclass
@@ -130,7 +116,7 @@ class EvaluationRunner:
             passed=False,
             attempts=state.get("attempts", 0),
             latency_seconds=round(latency, 3),
-            tool_calls=dict(counting.calls),
+            tool_calls=counting.snapshot(),
             agent_sql=agent_sql,
             answer=state.get("answer"),
         )

@@ -48,6 +48,43 @@ class Capabilities(Protocol):
         ...
 
 
+class CountingCapabilities:
+    """Wraps the MCP capabilities and counts calls per tool.
+
+    Delegating decorator only: the underlying transport, results, and read-only
+    boundary are untouched, and other attribute access is forwarded so the same
+    lifecycle methods (e.g. ``close``) remain reachable.
+
+    The count is incremented before the inner call is awaited, so a call that
+    fails — an invalid result or a raising transport — is still counted. Tool
+    loading (the connection handshake) is not a tool call and is not counted.
+    """
+
+    def __init__(self, inner: Capabilities) -> None:
+        self._inner = inner
+        self.calls: dict[str, int] = {}
+
+    async def call_tool(self, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.calls[name] = self.calls.get(name, 0) + 1
+        return await self._inner.call_tool(name, args)
+
+    def snapshot(self) -> dict[str, int]:
+        """Return a copy of the per-tool counts taken at this moment."""
+        return dict(self.calls)
+
+    def delta(self, snapshot: dict[str, int]) -> dict[str, int]:
+        """Per-tool calls made since ``snapshot``, zero entries dropped.
+
+        Counts only grow (there is no reset), so a tool not called since the
+        snapshot is absent from the result rather than reported as zero.
+        """
+        differences = {name: count - snapshot.get(name, 0) for name, count in self.calls.items()}
+        return {name: count for name, count in differences.items() if count > 0}
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._inner, item)
+
+
 class MCPCapabilities:
     """Call MCP tools on the configured analytics server."""
 

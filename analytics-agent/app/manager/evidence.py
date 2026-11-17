@@ -9,7 +9,7 @@ recorded here, and its deterministic groundedness check verifies that every
 number in the report appears in some recorded result set.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent.state import AgentState
@@ -36,6 +36,10 @@ class EvidenceRecord:
     # initial decomposition; synthesis and traces use this to tell the two
     # analyst rounds apart (D009: at most one follow-up round).
     is_follow_up: bool = False
+    # MCP tool calls spent producing this evidence, per tool name. Attributed
+    # by the graph from the run's counter; empty when no counter is installed
+    # (a library caller that does not care about cost).
+    tool_calls: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def from_agent_state(
@@ -45,6 +49,7 @@ class EvidenceRecord:
         state: AgentState,
         *,
         is_follow_up: bool = False,
+        tool_calls: dict[str, int] | None = None,
     ) -> "EvidenceRecord":
         """Build an evidence record from a completed analyst run state.
 
@@ -64,4 +69,5 @@ class EvidenceRecord:
                 state.get("llm_error") or state.get("query_error") or state.get("validation_error")
             ),
             is_follow_up=is_follow_up,
+            tool_calls=dict(tool_calls or {}),
         )
