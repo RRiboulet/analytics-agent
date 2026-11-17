@@ -130,6 +130,14 @@ class Settings(BaseSettings):
     manager_max_attempts: int = Field(
         default=2, validation_alias="MANAGER_MAX_ATTEMPTS", ge=1, le=10
     )
+    # Bounded parallelism for the manager's analyst fan-out (M8, spec D1): the
+    # sub-analyses (at most 4 by D009) and the single follow-up round run as
+    # concurrent analyst runs under a semaphore of this size. 1 restores the
+    # old sequential behavior exactly; the model provider, not the CPU, is the
+    # resource being shared, so this bounds concurrency rather than speedup.
+    manager_max_parallelism: int = Field(
+        default=4, validation_alias="MANAGER_MAX_PARALLELISM", ge=1
+    )
 
 
 @lru_cache

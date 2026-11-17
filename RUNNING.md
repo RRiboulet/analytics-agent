@@ -115,6 +115,8 @@ Everything lives in `analytics-agent/.env` (`.env.example` documents all keys):
   every agent/manager run is exported to Langfuse (cloud by default); tracing
   is fail-open and never blocks a run.
 * `AGENT_MAX_ATTEMPTS` / `MANAGER_MAX_ATTEMPTS` — retry budgets.
+* `MANAGER_MAX_PARALLELISM` — how many analyst sub-runs the manager runs at
+  once (default 4, minimum 1; 1 is the old sequential behavior).
 
 ## Notes
 
