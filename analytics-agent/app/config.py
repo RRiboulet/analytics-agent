@@ -104,9 +104,7 @@ class Settings(BaseSettings):
     # --reasoning on, where the model spends tokens on chain-of-thought before
     # emitting the final SQL/answer; without a cap the reasoning phase can crowd
     # out the final output and yield empty/truncated text.
-    llm_max_tokens: int | None = Field(
-        default=4096, validation_alias="LLM_MAX_TOKENS", ge=1
-    )
+    llm_max_tokens: int | None = Field(default=4096, validation_alias="LLM_MAX_TOKENS", ge=1)
     # Separate, tighter cap for the final answer step. The SQL step may need
     # room for chain-of-thought; the answer step only needs a concise
     # evidence-based summary, and a small cap bounds the worst-case wall time
