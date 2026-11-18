@@ -5,6 +5,8 @@ An autonomous analytics system over a realistic relational dataset (Olist Brazil
 - a **read-only MCP server** exposing database capabilities (table discovery, schema inspection, bounded `SELECT` queries, semantic metadata search) over PostgreSQL 16
 - a **SQL safety layer** enforcing strictly read-only access — the agent can never gain unrestricted database access
 - an **analytics agent** that answers natural-language analytical questions end-to-end: retrieve metadata → generate SQL → validate → execute through MCP → analyze → answer, with bounded retry recovery and optional Langfuse tracing
+- an **autonomous manager** that decomposes a management request into up to four parallel analyst runs, inspects the evidence, and reports only what the database supports
+- a **loopback web surface** that streams a run's pipeline live and ends with that report
 - **evaluation tooling** (deterministic reference-SQL benchmark) and observability for the full workflow
 
 The long-term goal is an **Autonomous Analytics Manager**; see [`PLAN.md`](PLAN.md) for the vision, milestones, and current status. `PLAN.md` is the source of truth for project direction.
@@ -21,7 +23,7 @@ The long-term goal is an **Autonomous Analytics Manager**; see [`PLAN.md`](PLAN.
 
 ## Documentation
 
-- Project setup, running the server, and connecting a client: [`analytics-agent/README.md`](analytics-agent/README.md)
+- Project setup, running the server and the web surface, and connecting a client: [`analytics-agent/README.md`](analytics-agent/README.md)
 - Development workflow, conventions, and safety rules: [`AGENTS.md`](AGENTS.md)
 - Roadmap and milestones: [`PLAN.md`](PLAN.md)
 

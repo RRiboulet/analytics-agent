@@ -572,23 +572,6 @@ async def test_counting_capabilities_snapshot_is_a_copy():
 
 
 @pytest.mark.asyncio
-async def test_counting_capabilities_delta_reports_only_new_calls():
-    caps = StubCapabilities(agent_entries=[{"total": 5.0}], reference_entries=[])
-    counting = CountingCapabilities(caps)
-    await counting.call_tool("list_tables")
-    before = counting.snapshot()
-
-    # Nothing happened since the snapshot: no zero entries, no carried-over keys.
-    assert counting.delta(before) == {}
-
-    await counting.call_tool("query", {"sql": "SELECT 1"})
-    await counting.call_tool("list_tables")
-
-    # A tool seen for the first time after the snapshot counts from zero.
-    assert counting.delta(before) == {"query": 1, "list_tables": 1}
-
-
-@pytest.mark.asyncio
 async def test_counting_capabilities_counts_a_call_whose_result_is_invalid():
     caps = StubCapabilities(agent_entries=[], reference_entries=[], query_valid=False)
     counting = CountingCapabilities(caps)

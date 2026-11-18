@@ -32,16 +32,45 @@ Failure policy (kept deliberately simple, per D009's fixed pipeline):
 
 Exceptions raised by ``run_analyst`` propagate (mirroring the agent's
 ``call_tool`` contract): the analyst graph reports its own failures in state.
+When a sub-run does raise, every in-flight sibling is allowed to settle before
+the first exception is re-raised, so no task is orphaned and the calls the
+aborted round spent are still counted (M8, R4).
+
+Parallelism (M8, D1): the sub-analyses and the single follow-up round fan out
+as concurrent analyst runs under a semaphore of ``max_parallelism``; results
+are collected in question order, so evidence indexing never depends on which
+run finished first. Per-run call attribution is exact under that fan-out
+because each run gets its own counting decorator around the shared capability
+(D2) — a snapshot/delta over the shared counter would double-count once two
+runs overlap.
+
+Progress (M8, R5): given ``ManagerServices.sink``, the graph streams its
+pipeline — request accepted, the decomposed sub-questions, each analysis
+starting and finishing (in completion order, attributed to its sub-question by
+``index``), the inspect decision, synthesis started, the groundedness verdict,
+and the terminal event with the report or the failure reason. Each nested
+analyst run emits through a child emitter derived from this run's emitter, so
+the whole run is *one* sequence of events and a consumer can order it as it
+arrives. Emission is fail-open and absent by default: without a sink nothing is
+constructed and the run is exactly what it was before.
+
+The terminal event is emitted by one place (the ``finish`` node) from the final
+state, so every termination path reports the same way. A run that *raises* — an
+MCP transport failure inside a sub-run, say — reaches no terminal node and
+emits no terminal event: its stream just ends, and a consumer treats the end of
+the stream as terminal.
 """
 
+import asyncio
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from app.agent.capabilities import Capabilities, CountingCapabilities
 from app.agent.llm import LLMError
 from app.agent.state import AgentState
 from app.manager.decompose import DecompositionError, decompose_request
@@ -50,6 +79,7 @@ from app.manager.inspect import FollowUpError, parse_follow_up_questions
 from app.manager.llm import ManagerLLM
 from app.manager.state import ManagerState, ManagerStatus
 from app.manager.synthesize import format_evidence, groundedness_violation
+from app.progress import ProgressEmitter, ProgressEventType, ProgressSink
 
 # Node identifiers.
 DECOMPOSE = "decompose"
@@ -59,6 +89,7 @@ RUN_FOLLOW_UPS = "run_follow_ups"
 SYNTHESIZE = "synthesize"
 RETRY = "retry"
 FAIL = "fail"
+FINISH = "finish"
 
 # Edge identifiers returned by conditional routers.
 SUB_ANALYSES_EDGE = "sub_analyses"
@@ -67,6 +98,7 @@ FOLLOW_UPS_EDGE = "follow_ups"
 SYNTHESIZE_EDGE = "synthesize"
 RETRY_EDGE = "retry"
 FAIL_EDGE = "fail"
+FINISH_EDGE = "finish"
 
 # Version-controlled, curated table names — the DB-free schema hint for the
 # decompose stage (the manager itself never queries the database, D009).
@@ -79,20 +111,33 @@ def _table_names_from_seed() -> list[str]:
     return list(seed["tables"])
 
 
-class ToolCallCounter(Protocol):
-    """Counting contract the manager expects from the MCP capability wrapper.
+# Default fan-out width (spec D1); ``MANAGER_MAX_PARALLELISM`` overrides it at
+# the composition root.
+DEFAULT_MAX_PARALLELISM = 4
 
-    Satisfied structurally by ``CountingCapabilities``, so the manager never
-    imports the evaluation package (and the counter stays a plain decorator).
+# One analyst run's outcome: its final state plus the MCP calls it spent.
+_AnalysisOutcome = tuple[AgentState, dict[str, int]]
+
+
+def manager_failure_reason(state: ManagerState) -> str | None:
+    """Why a manager run failed, or ``None`` when nothing failed.
+
+    The single definition of a run's failure reason: the terminal progress
+    event and the caller-facing ``ManagerRunResult.error`` both come from here,
+    so the live view and the caller can never disagree. Precedence follows the
+    pipeline: a decomposition failure happened before anything ran, a
+    groundedness violation before a report could be cleared, then a model
+    failure, then the first sub-analysis error.
     """
-
-    def snapshot(self) -> dict[str, int]:
-        """Return a copy of the per-tool counts right now."""
-        ...
-
-    def delta(self, snapshot: dict[str, int]) -> dict[str, int]:
-        """Return the per-tool calls made since ``snapshot``."""
-        ...
+    if state.get("decomposition_error"):
+        return state["decomposition_error"]
+    if state.get("groundedness_error"):
+        return state["groundedness_error"]
+    if state.get("llm_error"):
+        return state["llm_error"]
+    if state.get("status") is ManagerStatus.FAILED and state.get("sub_analysis_errors"):
+        return state["sub_analysis_errors"][0]
+    return None
 
 
 @dataclass
@@ -101,29 +146,58 @@ class ManagerServices:
 
     llm: ManagerLLM
     # Runs one grounded analyst sub-analysis and returns its final state.
-    # Actual wiring (shared capabilities, LLM, tracer config) is M7.4's job.
-    run_analyst: Callable[[str], Awaitable[AgentState]]
+    # The second argument is the capability surface for that sub-run: in
+    # production a fresh counting decorator around ``capabilities``, so the
+    # run's MCP calls are attributable without a snapshot/delta (D2). It is
+    # ``None`` when no shared surface was injected (a caller that does not
+    # care about cost). The third is the progress emitter for that sub-run —
+    # a child of this run's emitter, so the nested events continue the run's
+    # single sequence and are labelled with its sub-question (M8, R5). It is
+    # never ``None`` from the graph, but a runner may ignore it.
+    run_analyst: Callable[[str, Capabilities | None, ProgressEmitter], Awaitable[AgentState]]
     # Bounded retries for transient LLM failures; the budget is shared by
     # the retryable stages (decompose / inspect / synthesize).
     max_attempts: int = 2
-    # Optional MCP call counter: each analyst run's cost is attributed to the
-    # evidence record it produced. Absent by default, so the graph — and every
-    # caller that does not care about cost — behaves exactly as before.
-    tool_call_counter: ToolCallCounter | None = None
+    # How many analyst runs may be in flight at once (MANAGER_MAX_PARALLELISM).
+    # 1 reproduces the old sequential behavior exactly.
+    max_parallelism: int = DEFAULT_MAX_PARALLELISM
+    # The shared read-only capability surface the fan-out runs through; each
+    # run is wrapped in its own counter. Absent by default, so the graph — and
+    # every caller that does not care about cost — behaves exactly as before.
+    capabilities: Capabilities | None = None
+    # Optional progress sink (M8, R5). Absent by default, so every existing
+    # caller — CLI, library, tests — runs with no emission and no cost.
+    sink: ProgressSink | None = None
     # Table-name schema hint; defaults to the curated metadata seed.
     table_names: list[str] = field(default_factory=_table_names_from_seed)
 
 
 def build_manager_graph(services: ManagerServices) -> Any:
-    """Compile the manager state machine."""
+    """Compile the manager state machine.
+
+    The compiled graph serves exactly one run: its progress sink and event
+    sequence counter bind here, at construction. Build a graph per invocation
+    (D10) — a graph cached across invocations would fuse two runs into one
+    indistinguishable stream (nested analyst events included) and the second
+    run's events would never reach its own consumer.
+    """
+    # One emitter per manager run: it owns the run's sequence counter and is a
+    # no-op when no sink was injected. Every nested analyst run emits through a
+    # child of it (same sink, same counter), so the run is one ordered stream.
+    progress = ProgressEmitter(services.sink)
 
     async def _decompose(state: ManagerState) -> dict[str, Any]:
         update: dict[str, Any] = {"status": ManagerStatus.DECOMPOSING}
+        if not state.get("attempts"):
+            # The run's first event, emitted once: a retry re-enters this node.
+            progress.emit(ProgressEventType.REQUEST_ACCEPTED, question=state["request"])
         try:
             questions = await decompose_request(
                 services.llm, state["request"], services.table_names
             )
         except LLMError as error:
+            # No decomposed event: the failure surfaces as the terminal event
+            # with its reason, after the retry budget is spent.
             return {
                 **update,
                 "sub_questions": [],
@@ -138,6 +212,11 @@ def build_manager_graph(services: ManagerServices) -> Any:
                 "decomposition_error": str(error),
                 "llm_error": None,
             }
+        progress.emit(
+            ProgressEventType.SUB_QUESTIONS_DECOMPOSED,
+            questions=list(questions),
+            attempt=state.get("attempts", 1),
+        )
         return {
             **update,
             "sub_questions": questions,
@@ -145,37 +224,105 @@ def build_manager_graph(services: ManagerServices) -> Any:
             "decomposition_error": None,
         }
 
-    async def _analyse(question: str) -> tuple[AgentState, dict[str, int]]:
-        """Run one analyst sub-analysis, attributing its MCP calls.
+    async def _analyse(question: str, emitter: ProgressEmitter) -> _AnalysisOutcome:
+        """Run one analyst sub-analysis, attributing exactly its MCP calls.
 
-        The counter is snapshotted around the run, so the record gets exactly
-        the calls that run spent — including calls from any retry inside it.
-        Without a counter (a library caller that does not care about cost) the
-        attribution is simply empty.
+        Each run gets a fresh counting decorator around the shared capability
+        surface, so the record owns precisely the calls its own run spent —
+        including calls from any retry inside it. That stays exact when runs
+        overlap, which a snapshot/delta over the shared counter would not:
+        two concurrent runs would each absorb the other's calls.
+
+        Without a shared surface (a library caller that does not care about
+        cost) the attribution is simply empty. ``emitter`` is the child of this
+        run's emitter, so the nested analyst events land on the same stream.
         """
-        counter = services.tool_call_counter
-        if counter is None:
-            return await services.run_analyst(question), {}
-        before = counter.snapshot()
-        sub_state = await services.run_analyst(question)
-        return sub_state, counter.delta(before)
+        shared = services.capabilities
+        surface = CountingCapabilities(shared) if shared is not None else None
+        sub_state = await services.run_analyst(question, surface, emitter)
+        return sub_state, surface.snapshot() if surface is not None else {}
+
+    async def _analyse_all(
+        questions: Sequence[str], *, start_index: int = 0, is_follow_up: bool = False
+    ) -> list[EvidenceRecord]:
+        """Fan the questions out, bounded, and return records in input order.
+
+        ``asyncio.gather`` is the fan-out: every run is started before any is
+        awaited, and it returns one record per question in *input* order, so
+        evidence indexing cannot depend on completion order.
+
+        Each run emits its own ``analysis.started`` and ``analysis.finished``
+        events as it starts and completes — completion order, deliberately,
+        because that is what a live view is watching — stamped with the
+        sub-question's ``index``, so an order-independent consumer can still
+        put each event where it belongs.
+
+        Exceptions are collected (``return_exceptions=True``) rather than
+        cancelling siblings: every in-flight run settles, then the first
+        exception — by question order, so it is deterministic — is re-raised.
+        A crash therefore still propagates (the ``run_analyst`` contract)
+        without orphaning a task or discarding the calls already spent. The
+        crashing run reports no ``analysis.finished`` event: its stream, and
+        the run's, simply ends without a terminal event.
+        """
+        # A semaphore of 0 would deadlock, so clamp the floor here too rather
+        # than trusting every constructor (the setting already validates it).
+        semaphore = asyncio.Semaphore(max(1, services.max_parallelism))
+
+        async def _bounded(index: int, question: str) -> EvidenceRecord:
+            async with semaphore:
+                # The child emitter stamps the nested analyst events with this
+                # sub-question and shares the run's counter, so nested events
+                # cannot lose their attribution or restart numbering.
+                child = progress.child(index=index, question=question, is_follow_up=is_follow_up)
+                progress.emit(
+                    ProgressEventType.ANALYSIS_STARTED,
+                    index=index,
+                    question=question,
+                    is_follow_up=is_follow_up,
+                )
+                sub_state, tool_calls = await _analyse(question, child)
+                record = EvidenceRecord.from_agent_state(
+                    index, question, sub_state, is_follow_up=is_follow_up, tool_calls=tool_calls
+                )
+                progress.emit(
+                    ProgressEventType.ANALYSIS_FINISHED,
+                    index=index,
+                    question=question,
+                    is_follow_up=is_follow_up,
+                    sql=record.sql,
+                    row_count=len(record.rows) if record.rows is not None else None,
+                    answer=record.answer,
+                    error=record.error,
+                )
+                return record
+
+        outcomes = await asyncio.gather(
+            *(
+                _bounded(start_index + offset, question)
+                for offset, question in enumerate(questions)
+            ),
+            return_exceptions=True,
+        )
+        records: list[EvidenceRecord] = []
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                raise outcome
+            records.append(outcome)
+        return records
 
     async def _run_sub_analyses(state: ManagerState) -> dict[str, Any]:
-        evidence: list[EvidenceRecord] = []
-        errors: list[str] = []
-        # Sequential by D009 (the model server is the bottleneck; parallelism
-        # is a pure optimization that can be added without state changes).
-        for index, question in enumerate(state["sub_questions"]):
-            sub_state, tool_calls = await _analyse(question)
-            record = EvidenceRecord.from_agent_state(
-                index, question, sub_state, tool_calls=tool_calls
-            )
-            evidence.append(record)
-            if record.error:
-                errors.append(f"sub-question {index} ({question}): {record.error}")
-        all_failed = bool(evidence) and all(record.error is not None for record in evidence)
+        questions = list(state["sub_questions"])
+        # Parallel by D1; evidence still indexed by sub-question position.
+        records = await _analyse_all(questions)
+        errors = [
+            f"sub-question {record.sub_index} ({record.sub_question}): {record.error}"
+            for record in records
+            if record.error
+        ]
+        all_failed = bool(records) and all(record.error is not None for record in records)
         return {
-            "evidence": evidence,
+            "evidence": records,
             "sub_analysis_errors": errors,
             "status": ManagerStatus.FAILED if all_failed else ManagerStatus.COMPLETED,
         }
@@ -203,10 +350,22 @@ def build_manager_graph(services: ManagerServices) -> Any:
                     "llm_error": str(error),
                     "retry_stage": INSPECT,
                 }
+            reason = f"inspect LLM call failed: {error}"
+            # Degraded, not failed: the follow-up round is an enhancement and
+            # the evidence is already complete. The event carries the reason,
+            # and an explicit empty ``questions`` so a consumer can read the
+            # decision uniformly (no follow-ups) on every branch.
+            progress.emit(
+                ProgressEventType.INSPECTION_DECIDED,
+                status="degraded",
+                reason=reason,
+                questions=[],
+                attempt=state.get("attempts", 1),
+            )
             return {
                 **update,
                 "llm_error": None,
-                "inspect_error": f"inspect LLM call failed: {error}",
+                "inspect_error": reason,
                 "follow_up_questions": [],
                 "retry_stage": INSPECT,
             }
@@ -216,12 +375,25 @@ def build_manager_graph(services: ManagerServices) -> Any:
             # Unusable output: deterministic at temperature 0, retry cannot
             # help. Degrade to no follow-up — the caps are hard (D009) and
             # guessing which questions to keep is not the manager's job.
+            progress.emit(
+                ProgressEventType.INSPECTION_DECIDED,
+                status="degraded",
+                reason=str(error),
+                questions=[],
+                attempt=state.get("attempts", 1),
+            )
             return {
                 **update,
                 "inspect_error": str(error),
                 "follow_up_questions": [],
                 "llm_error": None,
             }
+        progress.emit(
+            ProgressEventType.INSPECTION_DECIDED,
+            status="follow_ups" if questions else "none",
+            questions=list(questions),
+            attempt=state.get("attempts", 1),
+        )
         return {
             **update,
             "follow_up_questions": questions,
@@ -234,26 +406,22 @@ def build_manager_graph(services: ManagerServices) -> Any:
         """Run the single follow-up round's questions through the analyst.
 
         Exactly one round by construction (the graph never loops back to
-        inspect). Follow-up records are appended to the evidence, marked
-        ``is_follow_up``, and number after the sub-analyses; a follow-up
-        failure is recorded and the round still proceeds to synthesis.
+        inspect), fanned out under the same bounded parallelism as the
+        sub-analyses (R2). Follow-up records are appended to the evidence,
+        marked ``is_follow_up``, and number after the sub-analyses; a
+        follow-up failure is recorded and the round still proceeds to
+        synthesis.
         """
-        questions = state.get("follow_up_questions", [])
+        questions = list(state.get("follow_up_questions", []))
         evidence = list(state.get("evidence", []))
-        errors: list[str] = []
         start_index = len(evidence)
-        for offset, question in enumerate(questions):
-            sub_state, tool_calls = await _analyse(question)
-            record = EvidenceRecord.from_agent_state(
-                start_index + offset,
-                question,
-                sub_state,
-                is_follow_up=True,
-                tool_calls=tool_calls,
-            )
-            evidence.append(record)
-            if record.error:
-                errors.append(f"follow-up {offset} ({question}): {record.error}")
+        records = await _analyse_all(questions, start_index=start_index, is_follow_up=True)
+        evidence.extend(records)
+        errors = [
+            f"follow-up {record.sub_index - start_index} ({record.sub_question}): {record.error}"
+            for record in records
+            if record.error
+        ]
         return {
             "evidence": evidence,
             "follow_up_errors": errors,
@@ -262,13 +430,49 @@ def build_manager_graph(services: ManagerServices) -> Any:
         }
 
     async def _retry(state: ManagerState) -> dict[str, Any]:
+        # The retry carries the reason the attempt was rejected, so a consumer
+        # sees why the pipeline went around again instead of guessing.
+        progress.emit(
+            ProgressEventType.RUN_RETRYING,
+            attempt=state.get("attempts", 1),
+            reason=manager_failure_reason(state),
+        )
         return {"attempts": state.get("attempts", 1) + 1, "status": ManagerStatus.RETRYING}
 
     async def _fail(state: ManagerState) -> dict[str, Any]:
         return {"status": ManagerStatus.FAILED}
 
+    async def _finish(state: ManagerState) -> dict[str, Any]:
+        """Emit the run's terminal event from its final state.
+
+        One place for every termination path, so the completed case (the
+        report) and the failed cases (decomposition error, exhausted retries,
+        every sub-analysis failing, a groundedness violation) report through
+        the same two event types with the same reason definition. A run that
+        *raises* never reaches this node, so it emits no terminal event at all —
+        the stream simply ends.
+        """
+        status = state.get("status")
+        if status is ManagerStatus.FAILED:
+            progress.emit(
+                ProgressEventType.RUN_FAILED,
+                status=str(ManagerStatus.FAILED),
+                reason=manager_failure_reason(state),
+            )
+        else:
+            progress.emit(
+                ProgressEventType.RUN_COMPLETED,
+                status=str(status),
+                report=state.get("report"),
+            )
+        return {}
+
     async def _synthesize(state: ManagerState) -> dict[str, Any]:
         update: dict[str, Any] = {"status": ManagerStatus.SYNTHESIZING}
+        progress.emit(
+            ProgressEventType.SYNTHESIS_STARTED,
+            attempt=state.get("attempts", 1),
+        )
         evidence = state.get("evidence", [])
         evidence_text = format_evidence(evidence)
         report = None
@@ -300,6 +504,7 @@ def build_manager_graph(services: ManagerServices) -> Any:
                 }
             violation = groundedness_violation(report, evidence, task=state.get("request", ""))
             if violation is None:
+                progress.emit(ProgressEventType.GROUNDEDNESS_VERDICT, status="grounded")
                 return {
                     **update,
                     "status": ManagerStatus.COMPLETED,
@@ -310,7 +515,13 @@ def build_manager_graph(services: ManagerServices) -> Any:
             if first_violating_report is None:
                 first_violating_report = report
         # Never ship a fabricated report: store the last rejected attempt for
-        # inspection only.
+        # inspection only. The verdict event carries the violation, never the
+        # rejected text — no event ever exposes it as the run's report.
+        progress.emit(
+            ProgressEventType.GROUNDEDNESS_VERDICT,
+            status="violated",
+            reason=violation,
+        )
         return {
             **update,
             "status": ManagerStatus.FAILED,
@@ -331,8 +542,9 @@ def build_manager_graph(services: ManagerServices) -> Any:
 
     def _route_after_sub_analyses(state: ManagerState) -> str:
         # All-failing sub-analyses already set FAILED; only a run with
-        # grounded evidence reaches the inspect stage (M7.5).
-        return INSPECT_EDGE if state.get("status") is ManagerStatus.COMPLETED else END
+        # grounded evidence reaches the inspect stage (M7.5). Either way the
+        # run finishes through the terminal node.
+        return INSPECT_EDGE if state.get("status") is ManagerStatus.COMPLETED else FINISH_EDGE
 
     def _route_after_synthesize(state: ManagerState) -> str:
         if state.get("llm_error"):
@@ -341,7 +553,7 @@ def build_manager_graph(services: ManagerServices) -> Any:
             return RETRY_EDGE if state.get("attempts", 1) < services.max_attempts else FAIL_EDGE
         # Both a completed report and a groundedness violation end the run
         # (the violation already set FAILED and withheld the report).
-        return END
+        return FINISH_EDGE
 
     def _route_after_inspect(state: ManagerState) -> str:
         if state.get("llm_error"):
@@ -370,6 +582,9 @@ def build_manager_graph(services: ManagerServices) -> Any:
     g.add_node(SYNTHESIZE, _synthesize)
     g.add_node(RETRY, _retry)
     g.add_node(FAIL, _fail)
+    # The terminal node: every path that ends the run passes through it, so the
+    # terminal progress event is emitted in exactly one place.
+    g.add_node(FINISH, _finish)
 
     g.add_edge(START, DECOMPOSE)
     g.add_conditional_edges(
@@ -380,7 +595,7 @@ def build_manager_graph(services: ManagerServices) -> Any:
     g.add_conditional_edges(
         RUN_SUB_ANALYSES,
         _route_after_sub_analyses,
-        {INSPECT_EDGE: INSPECT, END: END},
+        {INSPECT_EDGE: INSPECT, FINISH_EDGE: FINISH},
     )
     g.add_conditional_edges(
         INSPECT,
@@ -399,13 +614,14 @@ def build_manager_graph(services: ManagerServices) -> Any:
     g.add_conditional_edges(
         SYNTHESIZE,
         _route_after_synthesize,
-        {RETRY_EDGE: RETRY, FAIL_EDGE: FAIL, END: END},
+        {RETRY_EDGE: RETRY, FAIL_EDGE: FAIL, FINISH_EDGE: FINISH},
     )
     g.add_conditional_edges(
         RETRY,
         _route_after_retry,
         {DECOMPOSE: DECOMPOSE, INSPECT: INSPECT, SYNTHESIZE: SYNTHESIZE},
     )
-    g.add_edge(FAIL, END)
+    g.add_edge(FAIL, FINISH)
+    g.add_edge(FINISH, END)
 
     return g.compile()

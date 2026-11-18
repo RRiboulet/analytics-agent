@@ -50,6 +50,7 @@ def create_asgi_app() -> Starlette:
         database_url=settings.database_url,
         query_timeout_seconds=settings.query_timeout_seconds,
         max_rows=settings.max_rows,
+        pool_max_size=settings.db_pool_max_size,
     )
     mcp = create_mcp_server(client)
     app = mcp.streamable_http_app()

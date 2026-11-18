@@ -242,7 +242,7 @@ async def test_follow_up_records_are_attributed_separately() -> None:
     llm = FakeManagerLLM(
         raw="Revenue by category?", follow_up_raw="What drove the drop?", report="ok"
     )
-    state = await _invoke(_services(llm, analyst, tool_call_counter=counter))
+    state = await _invoke(_services(llm, analyst, capabilities=counter))
 
     initial, follow_up = state["evidence"]
     assert follow_up.is_follow_up is True

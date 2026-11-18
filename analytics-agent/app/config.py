@@ -27,6 +27,12 @@ class Settings(BaseSettings):
         default=10.0, validation_alias="QUERY_TIMEOUT_SECONDS", gt=0
     )
     max_rows: int = Field(default=100, validation_alias="MAX_ROWS", ge=1, le=1000)
+    # Upper bound of the asyncpg pool. Concurrent analyst sessions (M8) hit the
+    # server at once, so keep this at least as large as the manager's fan-out
+    # parallelism (MANAGER_MAX_PARALLELISM, default 4) so every concurrent
+    # analyst can hold a connection; the pool's min_size stays 1 so a
+    # single-client CLI run reserves nothing extra.
+    db_pool_max_size: int = Field(default=10, validation_alias="DB_POOL_MAX_SIZE", ge=1, le=100)
 
     # ------------------------------------------------------------------
     # Metadata / semantic retrieval (M3)
@@ -125,6 +131,36 @@ class Settings(BaseSettings):
     # hard bound (D009 fixed pipeline).
     manager_max_attempts: int = Field(
         default=2, validation_alias="MANAGER_MAX_ATTEMPTS", ge=1, le=10
+    )
+    # Bounded parallelism for the manager's analyst fan-out (M8, spec D1): the
+    # sub-analyses (at most 4 by D009) and the single follow-up round run as
+    # concurrent analyst runs under a semaphore of this size. 1 restores the
+    # old sequential behavior exactly; the model provider, not the CPU, is the
+    # resource being shared, so this bounds concurrency rather than speedup.
+    manager_max_parallelism: int = Field(
+        default=4, validation_alias="MANAGER_MAX_PARALLELISM", ge=1
+    )
+
+    # ------------------------------------------------------------------
+    # Web surface (M8)
+    # ------------------------------------------------------------------
+
+    # Loopback by default: the demo surface is for this host, whose policy is
+    # that SSH is its only open port. 8001 avoids the MCP server's 8000.
+    web_host: str = Field(default="127.0.0.1", validation_alias="WEB_HOST")
+    web_port: int = Field(default=8001, validation_alias="WEB_PORT", ge=1, le=65535)
+    # Optional shared token for the run endpoint. Unset (the default) disables
+    # the check; when set, a request must carry it as an ``X-Web-Token`` header
+    # or a ``token`` query parameter, compared in constant time. It is never a
+    # database or model credential and is never echoed in a response or a log.
+    web_token: str | None = Field(default=None, validation_alias="WEB_TOKEN")
+    # Process-wide cap on in-flight runs (spec R8/D6): a visitor beyond the cap
+    # does not get an error — it sees an explicit queued state and starts when
+    # a slot frees. Each run is a whole manager run, which already fans out up
+    # to MANAGER_MAX_PARALLELISM analyst runs against the model provider and the
+    # database pool, so this stays small (2 by default); 1 serializes runs.
+    web_max_concurrent_runs: int = Field(
+        default=2, validation_alias="WEB_MAX_CONCURRENT_RUNS", ge=1, le=32
     )
 
 

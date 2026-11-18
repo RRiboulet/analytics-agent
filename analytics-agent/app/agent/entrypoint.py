@@ -10,15 +10,16 @@ when a public key is configured).
 import asyncio
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from app.agent.capabilities import MCPCapabilities
-from app.agent.graph import AgentServices, build_graph
+from app.agent.capabilities import CountingCapabilities, MCPCapabilities
+from app.agent.graph import AgentServices, build_graph, failure_reason
 from app.agent.llm import create_llm
 from app.agent.state import AgentState
 from app.agent.tracing import AgentTracer
 from app.config import get_settings
+from app.progress import ProgressSink
 
 
 @dataclass
@@ -31,6 +32,10 @@ class RunResult:
     attempts: int
     state: AgentState
     error: str | None = None
+    # MCP tool calls the run actually spent, per tool name. Counted by the same
+    # delegating decorator the manager uses per sub-run (spec D2/R3), so the web
+    # surface can report real calls for a standalone analyst run too.
+    tool_calls: dict[str, int] = field(default_factory=dict)
 
 
 async def _run_question(
@@ -41,9 +46,14 @@ async def _run_question(
     max_attempts: int,
     max_rows: int,
     tracer: AgentTracer | None,
+    sink: ProgressSink | None = None,
 ) -> AgentState:
     services = AgentServices(
-        llm=llm, capabilities=capabilities, max_attempts=max_attempts, max_rows=max_rows
+        llm=llm,
+        capabilities=capabilities,
+        max_attempts=max_attempts,
+        max_rows=max_rows,
+        sink=sink,
     )
     graph = build_graph(services)
     # Fail-open observability: with Langfuse credentials the whole run is
@@ -55,11 +65,19 @@ async def _run_question(
     )
 
 
-async def run_agent(question: str) -> RunResult:
-    """Run the analytics agent end-to-end and return a concise result."""
+async def run_agent(question: str, *, sink: ProgressSink | None = None) -> RunResult:
+    """Run the analytics agent end-to-end and return a concise result.
+
+    ``sink`` is the optional progress channel: when supplied the run emits its
+    stage transitions, retries and terminal outcome through it, fail-open. With
+    no sink the run is exactly what it was before (no emission, no cost).
+    """
     settings = get_settings()
     llm = create_llm()
-    capabilities = MCPCapabilities()
+    # Count per tool on the way through: the caller (the web surface) reports
+    # real call counts instead of estimating them. Delegation only — the
+    # read-only transport and the capability surface are untouched.
+    capabilities = CountingCapabilities(MCPCapabilities())
     tracer = AgentTracer()
     try:
         state = await _run_question(
@@ -69,6 +87,7 @@ async def run_agent(question: str) -> RunResult:
             max_attempts=settings.agent_max_attempts,
             max_rows=settings.max_rows,
             tracer=tracer,
+            sink=sink,
         )
     finally:
         await capabilities.close()
@@ -80,19 +99,10 @@ async def run_agent(question: str) -> RunResult:
         sql=state.get("bounded_sql") or state.get("sql"),
         attempts=state.get("attempts", 0),
         state=state,
-        error=(
-            state.get("llm_error")
-            or state.get("query_error")
-            or state.get("validation_error")
-            # Retrieval errors only fail the run when the schema itself is
-            # unavailable; a degraded search_metadata failure on a completed
-            # run is visible in the trace but is not an error for the caller.
-            or (
-                (state.get("retrieval_errors") or [None])[0]
-                if state.get("schema_unavailable")
-                else None
-            )
-        ),
+        # A successful run is never an error: this is the same reason the
+        # failure event carries, so the caller and the live view agree.
+        error=failure_reason(state),
+        tool_calls=capabilities.snapshot(),
     )
 
 
