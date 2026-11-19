@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+REPO=/workspace
+AGENT_DIR=/home/vscode/.pi/agent
+
+# The private volume's mount point can arrive root-owned on a first run, and a
+# bind mount can arrive owned by a host uid that does not match vscode. Repair
+# both before anything below writes into them; with `set -e`, a failed write
+# would abort the rest of postCreate (git identity, clipboard, project setup).
+sudo chown -R vscode:vscode /home/vscode/.pi "$REPO"
+
 # --- zsh + Powerlevel10k ---
 # The common-utils feature creates ~/.zshrc before postCreate runs.
 touch ~/.zshrc
@@ -30,6 +39,28 @@ else
   echo '{"theme": "kokomi-theme"}' > "$SETTINGS"
 fi
 
+# --- review-triage policy ---
+# The policy lives on the private volume, not in the image or the clone, so a
+# fresh volume — which is what another host gets — would otherwise start from
+# the extension's built-in defaults. Seed this checkout's policy when the volume
+# has none, and never overwrite it: from then on the file belongs to whoever runs
+# the container, and a rebuild must not undo their edit. Validated with jq first
+# and installed through a temp file, so a malformed template fails here instead
+# of leaving pi with a policy it cannot parse.
+REVIEW_TRIAGE="$AGENT_DIR/review-triage.json"
+if [ ! -f "$REVIEW_TRIAGE" ]; then
+  if command -v jq >/dev/null 2>&1 \
+    && jq -e . "$REPO/.devcontainer/pi/review-triage.json" >/dev/null 2>&1 \
+    && jq . "$REPO/.devcontainer/pi/review-triage.json" > "$REVIEW_TRIAGE.tmp" \
+    && [ -s "$REVIEW_TRIAGE.tmp" ]; then
+    mv "$REVIEW_TRIAGE.tmp" "$REVIEW_TRIAGE"
+  else
+    rm -f "$REVIEW_TRIAGE.tmp"
+    echo "postCreate: could not install $REPO/.devcontainer/pi/review-triage.json into $AGENT_DIR" >&2
+    exit 1
+  fi
+fi
+
 # Copy the local model config for pi, merging providers so a personal provider
 # already in the volume is kept rather than replaced. If the existing file is
 # not mergeable (invalid JSON), leave it alone and say so rather than silently
@@ -47,9 +78,53 @@ else
   cp /workspace/.devcontainer/pi/models.json "$MODELS"
 fi
 
-# --- permissions ---
-sudo chown -R vscode:vscode /home/vscode/.pi
-sudo chown -R vscode:vscode /workspace
+# --- pi package from the image (pinned) ---
+# The image clones RRiboulet/my-agent-setup at the tag in
+# .devcontainer/pi-agent-setup.version and labels it. This container only
+# declares that baked copy in its own agent settings; it never fetches the
+# package. A stale image (repo pin bumped, image not rebuilt) fails here rather
+# than silently loading the previous release.
+PI_PACKAGE=/opt/pi-packages/my-agent-setup
+PI_PACKAGE_TAG_FILE="$PI_PACKAGE/.pi-agent-setup-tag"
+EXPECTED_TAG="$(tr -d '[:space:]' < "$REPO/.devcontainer/pi-agent-setup.version")"
+if [ ! -d "$PI_PACKAGE" ] || [ ! -f "$PI_PACKAGE_TAG_FILE" ]; then
+  echo "postCreate: missing baked pi package at $PI_PACKAGE; rebuild the image" >&2
+  exit 1
+fi
+ACTUAL_TAG="$(tr -d '[:space:]' < "$PI_PACKAGE_TAG_FILE")"
+if [ "$ACTUAL_TAG" != "$EXPECTED_TAG" ]; then
+  echo "postCreate: image carries $ACTUAL_TAG but this checkout pins $EXPECTED_TAG; rebuild the image (devc rebuild analytics-agent)" >&2
+  exit 1
+fi
+
+# User-level declaration, absolute so the path does not depend on where the
+# agent dir lives. Remove any older git clone entry first: two entries would
+# load the same extensions twice, and pi exits on the duplicate tools.
+SETTINGS="$AGENT_DIR/settings.json"
+touch "$SETTINGS"
+if command -v jq >/dev/null 2>&1; then
+  jq --arg pkg "$PI_PACKAGE" '
+    .packages = (((.packages // [])
+      | map(select((if type == "object" then (.source // "") else . end) | tostring | test("my-agent-setup") | not))) + [$pkg])
+  ' "$SETTINGS" > "$SETTINGS.tmp" && [ -s "$SETTINGS.tmp" ] \
+    && mv "$SETTINGS.tmp" "$SETTINGS" \
+    || { rm -f "$SETTINGS.tmp"; echo "postCreate: could not record $PI_PACKAGE in $SETTINGS" >&2; exit 1; }
+else
+  echo "postCreate: jq is required to declare the baked pi package" >&2
+  exit 1
+fi
+
+# Project trust makes /workspace/.pi/settings.json (codemode, tool defaults)
+# effective. Merge, never replace: an older volume may trust another path.
+TRUST="$AGENT_DIR/trust.json"
+if [ -f "$TRUST" ] && ! jq -e . "$TRUST" >/dev/null 2>&1; then
+  rm -f "$TRUST"
+fi
+if [ -f "$TRUST" ]; then
+  jq --arg repo "$REPO" '. + {($repo): true}' "$TRUST" > "$TRUST.tmp" && mv "$TRUST.tmp" "$TRUST"
+else
+  jq -n --arg repo "$REPO" '{($repo): true}' > "$TRUST.tmp" && mv "$TRUST.tmp" "$TRUST"
+fi
 
 # --- clipboard ---
 # The host injects WAYLAND_DISPLAY and DISPLAY into the container, but neither
@@ -71,26 +146,45 @@ fi
 cd analytics-agent
 uv sync 2>&1 | tail -5
 
-docker compose -f docker-compose.yml up -d postgres
-
-# Wait for Postgres to accept connections before reporting ready. `pg_isready`
-# is the real readiness probe; the previous `curl http://localhost:5432/` spoke
-# HTTP at a Postgres socket and could never succeed.
+# PostgreSQL is a service of the devcontainer's own compose stack (see
+# .devcontainer/docker-compose.yml) and is started by `devcontainer up`; there is
+# no Docker daemon in this container to start it with.
 #
-# `-h localhost` matters: without it `pg_isready` probes the Unix socket, which
-# the docker-entrypoint "temp server" also accepts while it loads the Olist
-# CSVs, so the loop could break before the real server is up. The temp server
-# has no TCP listener, so a TCP probe only succeeds once init has finished.
+# Wait for its TCP listener. The entrypoint's temporary init server during the
+# Olist load answers on the Unix socket only (`listen_addresses` is empty), so a
+# successful TCP connect is the first moment the real server is up — the same
+# reasoning the previous `pg_isready -h localhost` probe documented.
 PG_READY=
-for _ in $(seq 1 30); do
-  if docker compose -f docker-compose.yml exec -T postgres pg_isready -h localhost -U olist_admin -d olist >/dev/null 2>&1; then
+for _ in $(seq 1 60); do
+  if bash -c 'exec 3<>/dev/tcp/postgres/5432' 2>/dev/null; then
     PG_READY=1
     break
   fi
   sleep 2
 done
 if [ -z "$PG_READY" ]; then
-  echo 'postCreate: postgres not ready after 60s; check `docker compose logs postgres`' >&2
+  echo 'postCreate: postgres not reachable at postgres:5432 after 120s; on the host run `docker compose -f .devcontainer/docker-compose.yml logs postgres`' >&2
 fi
 echo
-echo 'Analytics Agent ready: MCP on http://localhost:8000/mcp, Postgres on localhost:5432'
+# --- pi model catalogs ---
+# The judge the policy names can be newer than the model list pi ships with, so a
+# fresh volume does not have it and the judge fails with "not in pi's catalogue"
+# until one refresh has run. A container with no network or no provider key must
+# still come up usable: hence a warning, not an exit.
+MODELS_STORE="$AGENT_DIR/models-store.json"
+# A refresh that cannot reach a provider still exits 0 and writes an empty
+# catalog, so the exit status alone does not prove the judge is reachable.
+# Confirm that the model the policy names is actually in the catalog and say so
+# when it is not: the only other symptom is triage quietly falling back to its
+# most expensive profile.
+JUDGE_PROVIDER="$(jq -r '.judge.provider // empty' "$REVIEW_TRIAGE" 2>/dev/null || true)"
+JUDGE_ID="$(jq -r '.judge.model // empty' "$REVIEW_TRIAGE" 2>/dev/null || true)"
+if ! pi update --models >/dev/null; then
+  echo "postCreate: 'pi update --models' failed; review-triage may not find its judge in the catalog (run it again once this container has network and a provider key)" >&2
+elif [ -n "$JUDGE_PROVIDER" ] && [ -n "$JUDGE_ID" ] \
+  && ! jq -e --arg p "$JUDGE_PROVIDER" --arg id "$JUDGE_ID" \
+    '((.[$p].models) // []) | any(.id == $id)' "$MODELS_STORE" >/dev/null 2>&1; then
+  echo "postCreate: the review-triage judge $JUDGE_PROVIDER/$JUDGE_ID is not in the model catalog; supply that provider's key and run 'pi update --models' in this container" >&2
+fi
+
+echo 'Analytics Agent ready: MCP on http://localhost:8000/mcp, Postgres on the compose network as postgres:5432'

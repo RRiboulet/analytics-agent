@@ -10,9 +10,10 @@ import pytest
 
 from app.agent.capabilities import parse_tool_result
 from app.agent.entrypoint import _run_question
-from app.agent.graph import AgentServices, build_graph
+from app.agent.graph import AgentServices, build_graph, failure_reason
 from app.agent.llm import FakeLLM, LLMError
 from app.agent.state import AgentStatus
+from app.progress import ProgressEmitter, ProgressEvent, ProgressEventType
 
 
 @pytest.mark.asyncio
@@ -400,3 +401,264 @@ async def test_fails_cleanly_after_persistent_llm_answer_failure() -> None:
     assert state["attempts"] == 2
     assert "timed out" in state["llm_error"]
     assert state.get("answer") is None
+
+
+# ---------------------------------------------------------------------------
+# Progress events (M8 ticket 02)
+# ---------------------------------------------------------------------------
+
+
+class RecordingSink:
+    """Progress sink that keeps every event, in delivery order."""
+
+    def __init__(self) -> None:
+        self.events: list[ProgressEvent] = []
+
+    def emit(self, event: ProgressEvent) -> None:
+        self.events.append(event)
+
+    def types(self) -> list[str]:
+        return [event.type for event in self.events]
+
+
+class RaisingSink:
+    """Progress sink that fails on every event (observability outage)."""
+
+    def emit(self, event: ProgressEvent) -> None:
+        raise RuntimeError("sink exploded")
+
+
+@pytest.mark.asyncio
+async def test_successful_run_emits_ordered_progress_events() -> None:
+    """R5/acceptance: a clean run reports each stage, in order, with a sequence."""
+    sql = "SELECT order_status, COUNT(*) n FROM orders GROUP BY order_status"
+    llm = FakeLLM(sql=sql, answer="delivered is most common")
+    sink = RecordingSink()
+    state = await _run(
+        AgentServices(llm=llm, capabilities=StubCapabilities(), max_attempts=3, sink=sink)
+    )
+
+    assert state["status"] == AgentStatus.COMPLETED
+    assert sink.types() == [
+        ProgressEventType.RUN_STARTED,
+        ProgressEventType.METADATA_RETRIEVED,
+        ProgressEventType.SQL_GENERATED,
+        ProgressEventType.SQL_VALIDATED,
+        ProgressEventType.SQL_EXECUTED,
+        ProgressEventType.ANALYSIS_COMPLETED,
+        ProgressEventType.RUN_COMPLETED,
+    ]
+    # Monotonic sequence numbers, one per event, starting at the first event.
+    assert [event.seq for event in sink.events] == list(range(1, len(sink.events) + 1))
+    # Run accepted carries the question; every stage carries its attempt.
+    assert sink.events[0].question == "Which status is most common?"
+    assert [event.attempt for event in sink.events[1:]] == [1] * (len(sink.events) - 1)
+    # A clean retrieval is reported without a reason (nothing degraded).
+    assert sink.events[1].reason is None
+    generated, validated, executed = sink.events[2:5]
+    assert generated.sql == sql
+    # The validated event carries the bounded SQL that actually runs.
+    assert validated.sql == state["bounded_sql"]
+    assert "LIMIT 100" in validated.sql
+    assert executed.sql == validated.sql
+    assert executed.row_count == 1
+    assert sink.events[5].answer == state["answer"]
+    terminal = sink.events[-1]
+    assert terminal.status == "completed"
+    assert terminal.answer == state["answer"]
+    assert ProgressEventType.RUN_FAILED not in sink.types()
+    # Rows are not dumped into events; the page gets the count instead.
+    assert "delivered" not in str(executed.as_dict())
+
+
+@pytest.mark.asyncio
+async def test_exhausted_invalid_sql_emits_retry_and_failure_with_reason() -> None:
+    """A failed run reports the retry (with its reason) and the terminal failure."""
+    sink = RecordingSink()
+    state = await _run(
+        AgentServices(
+            llm=FakeLLM(sql="DELETE FROM orders"),
+            capabilities=StubCapabilities(),
+            max_attempts=2,
+            sink=sink,
+        )
+    )
+
+    assert state["status"] == AgentStatus.FAILED
+    retries = [event for event in sink.events if event.type == ProgressEventType.RUN_RETRYING]
+    assert len(retries) == 1
+    assert retries[0].attempt == 1
+    assert "Only SELECT" in (retries[0].reason or "")
+    # The retry precedes the regenerated SQL, so the page reads chronologically.
+    types = sink.types()
+    assert types[types.index(ProgressEventType.RUN_RETRYING) + 1] == (
+        ProgressEventType.SQL_GENERATED
+    )
+    terminal = sink.events[-1]
+    assert terminal.type == ProgressEventType.RUN_FAILED
+    assert terminal.status == "failed"
+    assert terminal.reason == failure_reason(state)
+    assert "Only SELECT" in (terminal.reason or "")
+    assert ProgressEventType.RUN_COMPLETED not in types
+
+
+@pytest.mark.asyncio
+async def test_query_error_retry_reports_its_reason_then_completes() -> None:
+    """A recovered execution failure emits the retry, then the same stage again."""
+    sink = RecordingSink()
+    state = await _run(
+        AgentServices(
+            llm=FakeLLM(sql="SELECT 1", answer="ok"),
+            capabilities=SeqCapabilities([False, True]),
+            max_attempts=3,
+            sink=sink,
+        )
+    )
+
+    assert state["status"] == AgentStatus.COMPLETED
+    retry = next(event for event in sink.events if event.type == ProgressEventType.RUN_RETRYING)
+    assert retry.attempt == 1
+    assert "bad column" in (retry.reason or "")
+    # Only the successful execution is reported, and it is attempt 2.
+    executed = [event for event in sink.events if event.type == ProgressEventType.SQL_EXECUTED]
+    assert [event.attempt for event in executed] == [2]
+    assert executed[0].row_count == 1
+    assert sink.types()[-1] == ProgressEventType.RUN_COMPLETED
+    assert ProgressEventType.RUN_FAILED not in sink.types()
+
+
+@pytest.mark.asyncio
+async def test_raising_sink_leaves_a_successful_run_unchanged() -> None:
+    """R10: a sink that raises on every event is swallowed, fail-open."""
+
+    def services(sink) -> AgentServices:
+        return AgentServices(
+            llm=FakeLLM(sql_sequence=["DELETE FROM orders", "SELECT 1"], answer="ok"),
+            capabilities=StubCapabilities(),
+            max_attempts=3,
+            sink=sink,
+        )
+
+    silent = await _run(services(None))
+    guarded = await _run(services(RaisingSink()))
+
+    assert guarded == silent
+    assert guarded["status"] == AgentStatus.COMPLETED
+    assert guarded["answer"] == "ok"
+    assert failure_reason(guarded) is None
+
+
+@pytest.mark.asyncio
+async def test_raising_sink_leaves_a_failed_run_unchanged() -> None:
+    """R10: the failure path is identical with a broken sink and with no sink."""
+
+    def services(sink) -> AgentServices:
+        return AgentServices(
+            llm=FakeLLM(sql="DELETE FROM orders"),
+            capabilities=StubCapabilities(),
+            max_attempts=2,
+            sink=sink,
+        )
+
+    silent = await _run(services(None))
+    guarded = await _run(services(RaisingSink()))
+
+    assert guarded == silent
+    assert guarded["status"] == AgentStatus.FAILED
+    assert guarded.get("answer") is None
+    assert "Only SELECT" in (failure_reason(guarded) or "")
+
+
+@pytest.mark.asyncio
+async def test_degraded_retrieval_reports_its_reason_instead_of_looking_healthy() -> None:
+    """A schema-only run still reports retrieval, but with the failure as reason."""
+    sink = RecordingSink()
+    state = await _run(
+        AgentServices(
+            llm=FakeLLM(sql="SELECT 1", answer="ok"),
+            capabilities=SearchOnlyFailureCapabilities(),
+            max_attempts=3,
+            sink=sink,
+        )
+    )
+
+    assert state["status"] == AgentStatus.COMPLETED
+    assert state["retrieval_errors"] == ["search_metadata: Tool error: metadata index unavailable"]
+    retrieved = [
+        event for event in sink.events if event.type == ProgressEventType.METADATA_RETRIEVED
+    ]
+    assert len(retrieved) == 1
+    # Degraded is not healthy: the failed search is the event's reason.
+    assert retrieved[0].reason == state["retrieval_errors"][0]
+    # And it is not reported as a run failure, because the run completed.
+    assert ProgressEventType.RUN_FAILED not in sink.types()
+
+
+@pytest.mark.asyncio
+async def test_null_entries_payload_does_not_break_the_execute_node() -> None:
+    """A ``{"entries": null}`` query result is treated as no rows, not a crash."""
+
+    class NullEntriesCapabilities(StubCapabilities):
+        async def call_tool(self, name, args=None) -> dict:
+            if name == "query":
+                self.calls.append((name, args))
+                return {"valid": True, "message": "ok", "entries": None}
+            return await super().call_tool(name, args)
+
+    sink = RecordingSink()
+    state = await _run(
+        AgentServices(
+            llm=FakeLLM(sql="SELECT 1", answer="ok"),
+            capabilities=NullEntriesCapabilities(),
+            max_attempts=3,
+            sink=sink,
+        )
+    )
+
+    assert state["status"] == AgentStatus.COMPLETED
+    assert state["result"] == []
+    executed = next(event for event in sink.events if event.type == ProgressEventType.SQL_EXECUTED)
+    assert executed.row_count == 0
+
+
+@pytest.mark.asyncio
+async def test_schema_retrieval_failure_reports_the_tool_reason() -> None:
+    """A broken schema discovery emits no 'retrieved' event and fails with its reason."""
+    sink = RecordingSink()
+    state = await _run(
+        AgentServices(
+            llm=FakeLLM(sql="SELECT 1", answer="should not be used"),
+            capabilities=FlakyDiscoveryCapabilities(fail_count=99),
+            max_attempts=2,
+            sink=sink,
+        )
+    )
+
+    assert state["status"] == AgentStatus.FAILED
+    assert sink.types()[0] == ProgressEventType.RUN_STARTED
+    # Retrieval never completed, so it is not reported as a completed stage.
+    assert ProgressEventType.METADATA_RETRIEVED not in sink.types()
+    retry = next(event for event in sink.events if event.type == ProgressEventType.RUN_RETRYING)
+    assert "connection refused" in (retry.reason or "")
+    terminal = sink.events[-1]
+    assert terminal.type == ProgressEventType.RUN_FAILED
+    assert "connection refused" in (terminal.reason or "")
+
+
+def test_an_emitter_and_a_sink_together_are_rejected() -> None:
+    """One run is one stream: an emitter already owns the run's sink (D10).
+
+    A nested runner that passed ``sink=`` alongside the parent's emitter would
+    otherwise silently start a second stream inside the parent's run, with the
+    emitter winning and the sink ignored. The invalid combination fails loudly
+    at graph build instead.
+    """
+    services = AgentServices(
+        llm=FakeLLM(sql="SELECT 1", answer="ok"),
+        capabilities=StubCapabilities(),
+        sink=RecordingSink(),
+        emitter=ProgressEmitter(RecordingSink()),
+    )
+
+    with pytest.raises(ValueError, match="either an emitter or a sink"):
+        build_graph(services)

@@ -27,6 +27,12 @@ class Settings(BaseSettings):
         default=10.0, validation_alias="QUERY_TIMEOUT_SECONDS", gt=0
     )
     max_rows: int = Field(default=100, validation_alias="MAX_ROWS", ge=1, le=1000)
+    # Upper bound of the asyncpg pool. Concurrent analyst sessions (M8) hit the
+    # server at once, so keep this at least as large as the manager's fan-out
+    # parallelism (MANAGER_MAX_PARALLELISM, default 4) so every concurrent
+    # analyst can hold a connection; the pool's min_size stays 1 so a
+    # single-client CLI run reserves nothing extra.
+    db_pool_max_size: int = Field(default=10, validation_alias="DB_POOL_MAX_SIZE", ge=1, le=100)
 
     # ------------------------------------------------------------------
     # Metadata / semantic retrieval (M3)
@@ -77,7 +83,7 @@ class Settings(BaseSettings):
     # "openrouter" switches to the hosted OpenRouter API, which requires
     # OPENROUTER_API_KEY and uses OPENROUTER_MODEL. Both configurations stay
     # in .env simultaneously; the provider selects which one is active.
-    llm_provider: Literal["llamacpp", "openrouter"] = Field(
+    llm_provider: Literal["llamacpp", "openrouter", "opencode"] = Field(
         default="llamacpp", validation_alias="LLM_PROVIDER"
     )
     # OpenRouter serves an OpenAI-compatible API at this base URL.
@@ -90,20 +96,42 @@ class Settings(BaseSettings):
     # OpenRouter model id (e.g. "openai/gpt-4o-mini",
     # "meta-llama/llama-3.3-70b-instruct").
     openrouter_model: str = Field(default="openai/gpt-4o-mini", validation_alias="OPENROUTER_MODEL")
+    # OpenCode (OpenCode Go) serves an OpenAI-compatible API at this base URL.
+    opencode_base_url: str = Field(
+        default="https://opencode.ai/zen/go/v1", validation_alias="OPENCODE_BASE_URL"
+    )
+    # Secret: read from the environment/.env only; never logged or echoed in
+    # error messages. Required iff llm_provider is "opencode".
+    opencode_api_key: str | None = Field(default=None, validation_alias="OPENCODE_API_KEY")
+    # OpenCode model id. This key's catalogue reports reasoning effort levels
+    # per model (GET $OPENCODE_BASE_URL/models); the previous default
+    # "kimi-k2.6" is deprecated upstream (HTTP 410 on this gateway), and
+    # deepseek-v4.1-flash supports low/high/max effort.
+    opencode_model: str = Field(default="deepseek-v4.1-flash", validation_alias="OPENCODE_MODEL")
     llm_timeout_seconds: float = Field(default=300.0, validation_alias="LLM_TIMEOUT_SECONDS", gt=0)
     # Cap per-generation output tokens. This matters on servers started with
-    # --reasoning on, where the model spends tokens on chain-of-thought before
-    # emitting the final SQL/answer; without a cap the reasoning phase can crowd
-    # out the final output and yield empty/truncated text.
-    llm_max_tokens: int | None = Field(
-        default=4096, validation_alias="LLM_MAX_TOKENS", ge=1, le=32768
-    )
+    # --reasoning on and on hosted reasoning models (LLM_REASONING_EFFORT),
+    # where the model spends tokens on chain-of-thought before emitting the
+    # final SQL/answer; a cap that the reasoning phase exhausts yields
+    # empty/truncated text. Sized so a high-effort reasoning pass plus the
+    # actual SQL cannot meet the ceiling; providers bill only the tokens
+    # actually generated, so a large cap costs nothing when unused.
+    llm_max_tokens: int | None = Field(default=16384, validation_alias="LLM_MAX_TOKENS", ge=1)
     # Separate, tighter cap for the final answer step. The SQL step may need
     # room for chain-of-thought; the answer step only needs a concise
-    # evidence-based summary, and a small cap bounds the worst-case wall time
-    # on slow local models.
+    # evidence-based summary. Still sized above a high-effort reasoning pass
+    # (~0.5-2K tokens observed) so the prose cannot be truncated away.
     llm_answer_max_tokens: int | None = Field(
-        default=512, validation_alias="LLM_ANSWER_MAX_TOKENS", ge=1, le=32768
+        default=8192, validation_alias="LLM_ANSWER_MAX_TOKENS", ge=1
+    )
+    # Optional reasoning/thinking effort for OpenAI-compatible reasoning models
+    # (DeepSeek/GLM/Qwen families on hosted gateways). Unset (the default) sends
+    # no parameter at all, so the unauthenticated local llama.cpp path keeps its
+    # exact previous request shape. Reasoning tokens are billed against the caps
+    # above, so a reasoning model needs larger LLM_MAX_TOKENS /
+    # LLM_ANSWER_MAX_TOKENS than a plain chat model.
+    llm_reasoning_effort: Literal["low", "medium", "high", "max"] | None = Field(
+        default=None, validation_alias="LLM_REASONING_EFFORT"
     )
     # Maximum regeneration attempts before the agent fails out (no infinite
     # loops when SQL stays invalid or errors).
@@ -118,6 +146,36 @@ class Settings(BaseSettings):
     # hard bound (D009 fixed pipeline).
     manager_max_attempts: int = Field(
         default=2, validation_alias="MANAGER_MAX_ATTEMPTS", ge=1, le=10
+    )
+    # Bounded parallelism for the manager's analyst fan-out (M8, spec D1): the
+    # sub-analyses (at most 4 by D009) and the single follow-up round run as
+    # concurrent analyst runs under a semaphore of this size. 1 restores the
+    # old sequential behavior exactly; the model provider, not the CPU, is the
+    # resource being shared, so this bounds concurrency rather than speedup.
+    manager_max_parallelism: int = Field(
+        default=4, validation_alias="MANAGER_MAX_PARALLELISM", ge=1
+    )
+
+    # ------------------------------------------------------------------
+    # Web surface (M8)
+    # ------------------------------------------------------------------
+
+    # Loopback by default: the demo surface is for this host, whose policy is
+    # that SSH is its only open port. 8001 avoids the MCP server's 8000.
+    web_host: str = Field(default="127.0.0.1", validation_alias="WEB_HOST")
+    web_port: int = Field(default=8001, validation_alias="WEB_PORT", ge=1, le=65535)
+    # Optional shared token for the run endpoint. Unset (the default) disables
+    # the check; when set, a request must carry it as an ``X-Web-Token`` header
+    # or a ``token`` query parameter, compared in constant time. It is never a
+    # database or model credential and is never echoed in a response or a log.
+    web_token: str | None = Field(default=None, validation_alias="WEB_TOKEN")
+    # Process-wide cap on in-flight runs (spec R8/D6): a visitor beyond the cap
+    # does not get an error — it sees an explicit queued state and starts when
+    # a slot frees. Each run is a whole manager run, which already fans out up
+    # to MANAGER_MAX_PARALLELISM analyst runs against the model provider and the
+    # database pool, so this stays small (2 by default); 1 serializes runs.
+    web_max_concurrent_runs: int = Field(
+        default=2, validation_alias="WEB_MAX_CONCURRENT_RUNS", ge=1, le=32
     )
 
 

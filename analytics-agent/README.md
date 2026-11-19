@@ -18,12 +18,19 @@ A local FastMCP server for querying realistic e-commerce data (the Olist Brazili
 - A standalone **analytics agent** (`app/agent/`, M4) that answers a natural-language question
   end-to-end: retrieve metadata -> generate read-only SQL -> validate -> execute through MCP
   -> analyze -> answer, with bounded retry recovery and optional Langfuse tracing
+- An **autonomous analytics manager** (`app/manager/`, M7) that decomposes a management
+  request into up to four parallel analyst runs, inspects the evidence, and synthesizes a
+  report whose every number is traceable to an executed query
+- A **loopback web surface** (`app/web/`, M8) that streams a run's pipeline live and ends
+  with the grounded report
 
 This is a local demonstration. Authentication, Azure deployment, and write operations are intentionally outside this first version.
 
 ## Prerequisites
 
-Install Docker, Docker Compose, Python 3.13+, and `uv`.
+Inside the devcontainer everything below is already provided; PostgreSQL runs as a service of `.devcontainer/docker-compose.yml` and is reachable at `postgres:5432` (`DATABASE_URL`/`ADMIN_DATABASE_URL` are set by `containerEnv`). The container has no Docker daemon.
+
+For a run on a bare host instead: Docker, Docker Compose, Python 3.13+ and `uv`.
 
 ## Run locally
 
@@ -33,7 +40,11 @@ Install Docker, Docker Compose, Python 3.13+, and `uv`.
 	cp .env.example .env
 	```
 
-2. Start PostgreSQL:
+2. Start PostgreSQL.
+
+	Inside the devcontainer there is nothing to do: `devcontainer up` starts the
+	`postgres` service of `.devcontainer/docker-compose.yml` and `postCreate` waits
+	for its TCP listener. On a bare host, use the project file:
 
 	```bash
 	docker compose up -d postgres
@@ -148,6 +159,42 @@ state transitions, both LLM calls (`generate_sql` / `generate_answer`), each MCP
 call with arguments and result, retries/errors, and the final answer.
 
 
+## Run the web surface (M8)
+
+`app/web/` serves one page on loopback that streams a run as it happens: the decomposed
+sub-questions, each analysis with its SQL, rows and answer, the follow-up round, the
+groundedness verdict, and the final report with elapsed time and real MCP call counts.
+It is a pure client of the existing entrypoints — it never touches PostgreSQL or SQL, and
+the manager's budgets and groundedness gate are unchanged.
+
+```bash
+uv run python -m app.web            # serves http://127.0.0.1:8001
+uv run python -m app.web --check    # starts, serves the page, exits 0
+```
+
+The page offers two modes: **single question** (analyst, seconds) and **management
+request** (manager, a minute or more). Settings:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WEB_HOST` / `WEB_PORT` | `127.0.0.1` / `8001` | Bind address. Loopback is deliberate: this host exposes only SSH. |
+| `WEB_TOKEN` | unset (off) | Optional shared token, sent as `X-Web-Token` or `?token=`. Off by default because the surface is loopback-only; set it before putting a tunnel in front. |
+| `WEB_MAX_CONCURRENT_RUNS` | `2` | Runs admitted at once. A request beyond the limit receives a `queued` event and starts when a slot frees. |
+
+The web process has no database credentials of its own: runs go through the MCP server,
+which stays the only read-only path to PostgreSQL.
+
+Two execution-shape settings matter for latency:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MANAGER_MAX_PARALLELISM` | `4` | How many analyst sub-runs the manager runs at once (1 reproduces the old serial behaviour). |
+| `DB_POOL_MAX_SIZE` | `10` | asyncpg pool size for the MCP server, so concurrent analyses do not queue on connections. |
+
+The parallel win belongs to the hosted providers: a single-process local model server
+(`llama.cpp` without `--parallel`) still serves one request at a time, so the same code is
+correct there but not faster.
+
 ## Test the MCP server step by step
 
 These steps assume PostgreSQL and the MCP server are already running (see [Run locally](#run-locally)).
@@ -166,7 +213,7 @@ These steps assume PostgreSQL and the MCP server are already running (see [Run l
 	curl -s http://localhost:8000/ready
 	```
 
-	Expect `{"status": "ready"}`. A `503` with `{"status": "not_ready"}` means PostgreSQL is not reachable — check `docker compose ps`.
+	Expect `{"status": "ready"}`. A `503` with `{"status": "not_ready"}` means PostgreSQL is not reachable — inside the devcontainer check `docker compose -f .devcontainer/docker-compose.yml ps` on the host, on a bare host `docker compose ps`.
 
 3. Install Node.js if `npx` is not already available:
 
@@ -239,6 +286,11 @@ uv run ruff check .
 The unit tests cover SQL validation and the MCP tool response contract without requiring a live database. For a clean database, remove the named volume and initialize it again:
 
 ```bash
+# devcontainer: the data volume belongs to the devcontainer stack
+docker compose -f .devcontainer/docker-compose.yml down -v
+docker compose -f .devcontainer/docker-compose.yml up -d postgres
+
+# bare host
 docker compose down -v
 docker compose up -d postgres
 ```

@@ -19,15 +19,30 @@ The container provides:
 * `uv` for Python dependency management
 * Node.js LTS
 * the `pi` coding agent
-* Docker-in-Docker
-* Docker Compose
 * git
 * ruff
 * pytest
 
-On container startup, the project environment is prepared and the PostgreSQL service is started.
+There is **no Docker daemon inside the container**. PostgreSQL runs as a service
+of `.devcontainer/docker-compose.yml` (image `pgvector/pgvector:pg16`, data on the
+explicitly named `analytics-postgres` volume), so `devcontainer up` starts it and
+the app reaches it at `postgres:5432` — `containerEnv` sets `DATABASE_URL` and
+`ADMIN_DATABASE_URL` to that host, overriding the `localhost` values in `.env`,
+which remain correct for a host run. On container startup the project environment
+is prepared and the server waits for PostgreSQL's TCP listener.
 
-The pi extensions and skills are not vendored here. They come from the shared package declared in `.pi/settings.json` (`git:github.com/RRiboulet/my-agent-setup@v1.5.0`). Because project packages require project trust, pi installs and loads them only after trust is granted.
+The pi extensions and skills are not vendored here. The image bakes
+[RRiboulet/my-agent-setup](https://github.com/RRiboulet/my-agent-setup) at the tag
+in `.devcontainer/pi-agent-setup.version` under `/opt/pi-packages/my-agent-setup`,
+and `postCreate.sh` declares that baked path in the container's own agent
+settings. No other container shares the volume, the package, or any credential
+with this one.
+
+To bump the package: change `.devcontainer/pi-agent-setup.version`, change the
+`ARG PI_AGENT_SETUP_TAG=` line in the Dockerfile to the same tag, run
+`sh .devcontainer/check-pi-agent-setup.sh`, then `devc rebuild analytics-agent`.
+The build and `postCreate` both fail if the two disagree, and `postCreate`
+also fails if the running image carries a different tag than the checkout pins.
 
 ## Working Directory
 
@@ -35,7 +50,7 @@ Coordination and planning docs (`AGENTS.md`, `PLAN.md`) live at the repo root `/
 
 The project code lives in `analytics-agent/` — the **permanent project home**.
 
-Run `uv`, `uvx`, pytest, ruff, and Docker Compose commands from `analytics-agent/`. Relative paths such as `app/`, `db/`, and `tests/` in this file and in `PLAN.md` are relative to that directory.
+Run `uv`, `uvx`, pytest and ruff from `analytics-agent/`. Relative paths such as `app/`, `db/`, and `tests/` in this file and in `PLAN.md` are relative to that directory.
 
 ## Project Context
 
@@ -96,7 +111,7 @@ For ordinary implementation details with a reasonable conventional solution, mak
 The current project contains:
 
 * a Python MCP server
-* PostgreSQL running through Docker Compose
+* PostgreSQL running as a compose service (`postgres:5432`)
 * MCP tools for database interaction
 * a SQL safety layer enforcing read-only access
 * tests covering the existing MCP functionality
@@ -145,6 +160,21 @@ uv run <command>
 Python version: 3.13.
 
 The virtual environment is located at `.venv/`.
+
+## Secrets and Environment Files
+
+- Never read, open, print, search, or otherwise inspect secret-bearing files,
+  including `.env`, `.env.*`, `*.key`, `*.pem`, credential stores, and similar.
+  These files (e.g. `.env`) contain live credentials and must remain private.
+- Reference only `.env.example` (or other checked-in templates) to learn the names
+  or shape of environment variables; never their values.
+- Never include secret values in responses, logs, commits, code, tool output, or
+  generated artifacts. If a command unexpectedly prints secrets, do not repeat or
+  summarize them; report only that secrets were exposed and recommend rotation.
+- Do not guess, reconstruct, or infer credential values. If a task needs a value
+  not available through the environment/configuration, ask the user.
+- Environment variables are already loaded into the process by the host/runtime;
+  read them through the application's settings, not via the files that define them.
 
 ## Code Quality
 

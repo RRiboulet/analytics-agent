@@ -48,6 +48,34 @@ class Capabilities(Protocol):
         ...
 
 
+class CountingCapabilities:
+    """Wraps the MCP capabilities and counts calls per tool.
+
+    Delegating decorator only: the underlying transport, results, and read-only
+    boundary are untouched, and other attribute access is forwarded so the same
+    lifecycle methods (e.g. ``close``) remain reachable.
+
+    The count is incremented before the inner call is awaited, so a call that
+    fails — an invalid result or a raising transport — is still counted. Tool
+    loading (the connection handshake) is not a tool call and is not counted.
+    """
+
+    def __init__(self, inner: Capabilities) -> None:
+        self._inner = inner
+        self.calls: dict[str, int] = {}
+
+    async def call_tool(self, name: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.calls[name] = self.calls.get(name, 0) + 1
+        return await self._inner.call_tool(name, args)
+
+    def snapshot(self) -> dict[str, int]:
+        """Return a copy of the per-tool counts taken at this moment."""
+        return dict(self.calls)
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._inner, item)
+
+
 class MCPCapabilities:
     """Call MCP tools on the configured analytics server."""
 

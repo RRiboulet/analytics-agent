@@ -12,6 +12,7 @@ implementations:
   graph can be exercised without a live model (or network).
 """
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -66,7 +67,13 @@ class LLM(Protocol):
 
 
 def _request_payload(
-    model: str, system: str, user: str, *, timeout: float, max_tokens: int | None = None
+    model: str,
+    system: str,
+    user: str,
+    *,
+    timeout: float,
+    max_tokens: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, float]]:
     payload: dict[str, Any] = {
         "model": model,
@@ -78,7 +85,30 @@ def _request_payload(
     }
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
+    if reasoning_effort is not None:
+        # OpenAI-compatible thinking level. Absent unless configured, so the
+        # plain local llama.cpp request is byte-for-byte unchanged.
+        payload["reasoning_effort"] = reasoning_effort
     return payload, {"timeout": timeout}
+
+
+def _empty_content_message(data: Any) -> str:
+    """Explain an empty completion, naming the truncation cause when visible."""
+    try:
+        choice = data["choices"][0]
+        finish_reason = choice.get("finish_reason")
+        message = choice.get("message") or {}
+    except (KeyError, IndexError, TypeError, AttributeError):  # pragma: no cover - defensive
+        return "LLM returned empty text content."
+    reasoning = message.get("reasoning_content")
+    detail = f"finish_reason={finish_reason!r}"
+    if isinstance(reasoning, str) and reasoning.strip():
+        detail += ", reasoning_content present"
+    return (
+        f"LLM returned empty text content ({detail}). A reasoning model that spends its "
+        "output budget on chain-of-thought emits no final text; raise "
+        "LLM_MAX_TOKENS / LLM_ANSWER_MAX_TOKENS or lower LLM_REASONING_EFFORT."
+    )
 
 
 class LLMClient:
@@ -92,7 +122,9 @@ class LLMClient:
         max_tokens: int | None = None,
         answer_max_tokens: int | None = None,
         api_key: str | None = None,
+        extra_headers: dict[str, str] | None = None,
         transport: Any | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         settings = get_settings()
         self.base_url = (base_url or settings.llm_base_url).rstrip("/")
@@ -105,6 +137,8 @@ class LLMClient:
             self._headers["Authorization"] = f"Bearer {api_key}"
             # OpenRouter attribution header (optional, harmless elsewhere).
             self._headers["X-Title"] = "analytics-agent"
+        if extra_headers:
+            self._headers.update(extra_headers)
         self.timeout_seconds = timeout_seconds or settings.llm_timeout_seconds
         self.max_tokens = max_tokens or settings.llm_max_tokens
         # SQL generation may need more tokens (chain-of-thought + SQL); the
@@ -115,10 +149,18 @@ class LLMClient:
         self.answer_max_tokens = answer_max_tokens
         # httpx transport override is supported so tests can stub the network.
         self._transport = transport
+        # Optional thinking level; None leaves reasoning to the server default
+        # (llama.cpp --reasoning, or the gateway's own default).
+        self.reasoning_effort = reasoning_effort or settings.llm_reasoning_effort
 
     async def _complete(self, system: str, user: str, *, max_tokens: int | None = None) -> str:
         payload, opts = _request_payload(
-            self.model, system, user, timeout=self.timeout_seconds, max_tokens=max_tokens
+            self.model,
+            system,
+            user,
+            timeout=self.timeout_seconds,
+            max_tokens=max_tokens,
+            reasoning_effort=self.reasoning_effort,
         )
         client = httpx.AsyncClient(transport=self._transport)
         try:
@@ -147,6 +189,13 @@ class LLMClient:
                     # null/non-text content. Surface it as a typed, retryable
                     # LLMError instead of crashing with an AttributeError.
                     raise LLMError(f"LLM returned no usable text content (content={content!r}).")
+                if not content.strip():
+                    # An empty completion is never usable as SQL or as an answer,
+                    # and silently returning "" turns into an opaque downstream
+                    # validation failure. Reason the cause into the message: a
+                    # reasoning model whose effort spends the whole cap on
+                    # chain-of-thought finishes with no final text at all.
+                    raise LLMError(_empty_content_message(data))
                 return content.strip()
             except (KeyError, IndexError, TypeError, ValueError, AttributeError) as error:
                 raise LLMError(f"Unexpected LLM response: {error}") from error
@@ -202,7 +251,11 @@ def create_llm() -> LLMClient:
       ``OPENROUTER_BASE_URL`` / ``OPENROUTER_MODEL``, authenticated with the
       required ``OPENROUTER_API_KEY``.
 
-    Shared per-call settings (timeouts, token caps) apply to both providers.
+    * ``opencode`` — the hosted OpenCode (Go) API configured by
+      ``OPENCODE_BASE_URL`` / ``OPENCODE_MODEL``, authenticated with the
+      required ``OPENCODE_API_KEY``.
+
+    Shared per-call settings (timeouts, token caps) apply to all providers.
     Misconfiguration (unknown provider, missing API key) raises ``ValueError``
     so callers fail fast at startup instead of mid-run.
     """
@@ -215,6 +268,15 @@ def create_llm() -> LLMClient:
             base_url=settings.openrouter_base_url,
             model=settings.openrouter_model,
             api_key=settings.openrouter_api_key,
+        )
+    if settings.llm_provider == "opencode":
+        if not settings.opencode_api_key:
+            raise ValueError("OPENCODE_API_KEY is required when LLM_PROVIDER=opencode")
+        return LLMClient(
+            base_url=settings.opencode_base_url,
+            model=settings.opencode_model,
+            api_key=settings.opencode_api_key,
+            extra_headers={"x-opencode-session": f"session-{uuid.uuid4().hex}"},
         )
     return LLMClient()
 

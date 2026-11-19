@@ -9,11 +9,12 @@ import json
 
 import pytest
 
+from app.agent.capabilities import CountingCapabilities
 from app.agent.llm import FakeLLM
 from app.evaluation.dataset import DatasetError, EvalCase, load_dataset, select_cases
 from app.evaluation.judges import compare_result_sets, referenced_tables
 from app.evaluation.report import aggregate, render_markdown
-from app.evaluation.runner import CaseResult, CountingCapabilities, EvaluationRunner
+from app.evaluation.runner import CaseResult, EvaluationRunner
 
 DATASET_PATH = "data/evaluation/olist_v1.yaml"
 
@@ -546,6 +547,55 @@ async def test_counting_capabilities_forwards_unknown_attributes():
     assert counting.closed is False
     await counting.close()
     assert caps.closed is True
+
+
+def test_counting_capabilities_is_still_importable_from_the_evaluation_runner():
+    from app.evaluation.runner import CountingCapabilities as reexported  # noqa: PLC0415
+
+    assert reexported is CountingCapabilities
+
+
+@pytest.mark.asyncio
+async def test_counting_capabilities_snapshot_is_a_copy():
+    caps = StubCapabilities(agent_entries=[{"total": 5.0}], reference_entries=[{"total": 5.0}])
+    counting = CountingCapabilities(caps)
+    await counting.call_tool("list_tables")
+
+    snapshot = counting.snapshot()
+    await counting.call_tool("list_tables")
+
+    # A later call does not mutate an earlier snapshot.
+    assert snapshot == {"list_tables": 1}
+    # Mutating the snapshot does not reach into the counter.
+    snapshot["query"] = 99
+    assert counting.calls == {"list_tables": 2}
+
+
+@pytest.mark.asyncio
+async def test_counting_capabilities_counts_a_call_whose_result_is_invalid():
+    caps = StubCapabilities(agent_entries=[], reference_entries=[], query_valid=False)
+    counting = CountingCapabilities(caps)
+
+    result = await counting.call_tool("query", {"sql": "SELECT 1"})
+
+    assert result["valid"] is False
+    assert counting.calls == {"query": 1}
+
+
+@pytest.mark.asyncio
+async def test_counting_capabilities_counts_a_call_that_raises():
+    class RaisingCapabilities:
+        async def call_tool(self, name, args=None):
+            raise RuntimeError("transport down")
+
+    counting = CountingCapabilities(RaisingCapabilities())
+
+    with pytest.raises(RuntimeError):
+        await counting.call_tool("query", {"sql": "SELECT 1"})
+
+    # The real MCP adapter converts failures into invalid results instead of
+    # raising; counting happens before the inner call so either way is counted.
+    assert counting.calls == {"query": 1}
 
 
 @pytest.mark.asyncio

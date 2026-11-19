@@ -1,3 +1,6 @@
 {
-  "packages": ["git:github.com/RRiboulet/my-agent-setup@v1.5.0"]
+  "defaultTools": ["+tool_search", "+codemode"],
+  "codemode": {
+    "mode": "on"
+  }
 }

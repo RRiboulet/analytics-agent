@@ -20,17 +20,26 @@ class PostgresClient:
     # and must not surface to the analytics agent as queryable sources.
     INTERNAL_TABLES = frozenset({"metadata_documents"})
 
-    def __init__(self, database_url: str, query_timeout_seconds: float, max_rows: int) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        query_timeout_seconds: float,
+        max_rows: int,
+        pool_max_size: int = 10,
+    ) -> None:
         self.database_url = database_url
         self.query_timeout_seconds = query_timeout_seconds
         self.max_rows = max_rows
+        # Sized from settings (DB_POOL_MAX_SIZE) by the server composition; the
+        # default mirrors the setting so direct constructions stay correct.
+        self.pool_max_size = pool_max_size
         self.pool: asyncpg.Pool | None = None
 
     async def connect(self) -> None:
         self.pool = await asyncpg.create_pool(
             dsn=self.database_url,
             min_size=1,
-            max_size=5,
+            max_size=self.pool_max_size,
             command_timeout=self.query_timeout_seconds,
         )
 

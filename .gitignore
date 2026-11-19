@@ -226,3 +226,4 @@ __marimo__/
 
 # Node dependencies (pi tooling)
 node_modules/
+.worktrees/

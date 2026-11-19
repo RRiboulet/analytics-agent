@@ -11,6 +11,7 @@ observability plumbing. The inherited analyst methods (``generate_sql`` /
 ``generate_answer``) are simply not used by the manager.
 """
 
+import uuid
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -35,9 +36,14 @@ _SYNTHESIZE_SYSTEM = (
     "derived or computed numbers, no invented values, and no percentages "
     "unless a percentage appears in a result row. Do not quote thresholds, "
     "limits, counts, ratios, or computed values unless that exact value is "
-    "present in a result row or supplied in the management request. Do not "
-    "use numbered lists or any numbering. If the evidence is insufficient "
-    "for a claim, say so instead of filling the gap."
+    "present in a result row or supplied in the management request. "
+    "Structural constants from the analysis plan (such as day windows, "
+    "top-N limits, thresholds, or SQL filter values) are not evidence: do "
+    "not mention them, even though they appear in the SQL. Refer to periods "
+    "using the labels supplied by the executed queries rather than their "
+    "numeric window sizes. Do not use numbered lists or any numbering. If "
+    "the evidence is insufficient for a claim, say so instead of filling "
+    "the gap."
 )
 
 _INSPECT_SYSTEM = (
@@ -167,5 +173,14 @@ def create_manager_llm() -> ManagerLLMClient:
             base_url=settings.openrouter_base_url,
             model=settings.openrouter_model,
             api_key=settings.openrouter_api_key,
+        )
+    if settings.llm_provider == "opencode":
+        if not settings.opencode_api_key:
+            raise ValueError("OPENCODE_API_KEY is required when LLM_PROVIDER=opencode")
+        return ManagerLLMClient(
+            base_url=settings.opencode_base_url,
+            model=settings.opencode_model,
+            api_key=settings.opencode_api_key,
+            extra_headers={"x-opencode-session": f"session-{uuid.uuid4().hex}"},
         )
     return ManagerLLMClient()

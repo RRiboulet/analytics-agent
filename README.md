@@ -5,6 +5,8 @@ An autonomous analytics system over a realistic relational dataset (Olist Brazil
 - a **read-only MCP server** exposing database capabilities (table discovery, schema inspection, bounded `SELECT` queries, semantic metadata search) over PostgreSQL 16
 - a **SQL safety layer** enforcing strictly read-only access — the agent can never gain unrestricted database access
 - an **analytics agent** that answers natural-language analytical questions end-to-end: retrieve metadata → generate SQL → validate → execute through MCP → analyze → answer, with bounded retry recovery and optional Langfuse tracing
+- an **autonomous manager** that decomposes a management request into up to four parallel analyst runs, inspects the evidence, and reports only what the database supports
+- a **loopback web surface** that streams a run's pipeline live and ends with that report
 - **evaluation tooling** (deterministic reference-SQL benchmark) and observability for the full workflow
 
 The long-term goal is an **Autonomous Analytics Manager**; see [`PLAN.md`](PLAN.md) for the vision, milestones, and current status. `PLAN.md` is the source of truth for project direction.
@@ -21,17 +23,21 @@ The long-term goal is an **Autonomous Analytics Manager**; see [`PLAN.md`](PLAN.
 
 ## Documentation
 
-- Project setup, running the server, and connecting a client: [`analytics-agent/README.md`](analytics-agent/README.md)
+- Project setup, running the server and the web surface, and connecting a client: [`analytics-agent/README.md`](analytics-agent/README.md)
 - Development workflow, conventions, and safety rules: [`AGENTS.md`](AGENTS.md)
 - Roadmap and milestones: [`PLAN.md`](PLAN.md)
 
 ## Development environment
 
-The project is developed inside a VSCode Dev Container providing Python 3.13, `uv`, Node.js, the `pi` coding agent, tmux, Docker-in-Docker, and PostgreSQL via Docker Compose. Open the repo in VSCode and select **Dev Containers: Reopen in Container...**.
+The project is developed inside a VSCode Dev Container providing Python 3.13, `uv`, Node.js, the `pi` coding agent, tmux, and PostgreSQL as a service of the devcontainer's own compose stack (`postgres:5432`, data on the explicitly named `analytics-postgres` volume). There is no Docker daemon inside the container. Open the repo in VSCode and select **Dev Containers: Reopen in Container...**, or on a headless host use `devc analytics-agent` from `my-agent-setup`.
 
 ## Pi agent extensions
 
-The pi extensions and skills come from the shared, versioned package declared in `.pi/settings.json` (`git:github.com/RRiboulet/my-agent-setup@v1.5.0`), not from a vendored copy. Because it is a project package, pi installs and loads it only after project trust is granted: pi asks once, and the answer is stored on the persistent pi-config volume, so container rebuilds keep it and only a fresh volume re-asks. A non-interactive first run (`pi -p`) in an untrusted project loads no project extensions, so grant trust interactively once (or pass `--approve`).
+The pi extensions and skills come from [RRiboulet/my-agent-setup](https://github.com/RRiboulet/my-agent-setup), not from a vendored copy. The image clones the tag recorded in `.devcontainer/pi-agent-setup.version` to `/opt/pi-packages/my-agent-setup`, outside the persistent agent dir, and `postCreate.sh` points the container's own settings at that path. The pin is recorded once in `.devcontainer/pi-agent-setup.version` and names a released tag, so a bump is a conscious step; its CI check and `postCreate` both fail if the recorded pin, the Dockerfile and the running image drift apart.
+
+The review-triage policy comes from `.devcontainer/pi/review-triage.json` and is seeded into the container's agent dir only when that dir has no `review-triage.json` yet, so a fresh volume or another host gets the same judge and reviewers while an edit made inside a running container survives a rebuild.
+
+The container does not share a pi volume or credentials with any other project. Provider keys and `GH_TOKEN` arrive from the host environment (`devc` sources `~/.config/devc/env`), and sessions, trust and gh config stay on this project's private `pi-config` volume.
 
 The package's `subagent` extension lets the main agent delegate isolated tasks to child pi processes that run in detached `tmux` sessions:
 

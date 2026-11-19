@@ -18,6 +18,7 @@ from app.agent.graph import AgentServices, build_graph
 from app.agent.llm import FakeLLM, LLMClient, LLMError, _request_payload, create_llm
 from app.agent.tracing import PROJECT_ENV_PATH, AgentTracer, callbacks_for
 from app.config import Settings, get_settings
+from app.progress import NullSink, ProgressEmitter, ProgressEvent, ProgressEventType
 
 # ---------------------------------------------------------------------------
 # Entrypoint CLI / run_agent
@@ -53,6 +54,14 @@ async def test_run_agent_with_fake_components(monkeypatch) -> None:
     assert res.status == "completed"
     assert res.answer == "answer"
     assert res.sql is not None
+    # The run reports the calls it actually spent (the web surface's final
+    # payload reads these instead of estimating).
+    assert res.tool_calls == {
+        "search_metadata": 1,
+        "list_tables": 1,
+        "get_relationships": 1,
+        "query": 1,
+    }
 
 
 @pytest.mark.asyncio
@@ -280,6 +289,18 @@ def test_request_payload_shape() -> None:
     assert opts == {"timeout": 1.0}
 
 
+def test_request_payload_omits_reasoning_effort_when_unset() -> None:
+    payload, _ = _request_payload("m", "sys", "usr", timeout=1.0)
+    # The local llama.cpp path is configured with --reasoning on instead, so an
+    # unconfigured effort must not add any parameter to the request.
+    assert "reasoning_effort" not in payload
+
+
+def test_request_payload_includes_reasoning_effort_when_set() -> None:
+    payload, _ = _request_payload("m", "sys", "usr", timeout=1.0, reasoning_effort="high")
+    assert payload["reasoning_effort"] == "high"
+
+
 # ---------------------------------------------------------------------------
 # LLM provider selection (llamacpp default / openrouter)
 # ---------------------------------------------------------------------------
@@ -329,6 +350,26 @@ def test_settings_reject_unknown_provider(monkeypatch, _reset_settings_cache) ->
     monkeypatch.setenv("LLM_PROVIDER", "ollama-cloud")
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_settings_reject_unknown_reasoning_effort(monkeypatch, _reset_settings_cache) -> None:
+    # Models advertise a discrete effort list (deepseek-v4.1-flash: low/high/max),
+    # so an unsupported level must fail at startup rather than 400 mid-run.
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "medium-high")
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_default_token_caps_leave_room_for_a_reasoning_pass() -> None:
+    # Reasoning tokens are billed against the caps, so a default sized for a
+    # plain chat model truncates a high-effort pass to an empty completion.
+    # Assert the declared defaults (not a resolved Settings instance) so a
+    # developer's project .env cannot mask a regression in the defaults.
+    max_tokens = Settings.model_fields["llm_max_tokens"].default
+    answer_max_tokens = Settings.model_fields["llm_answer_max_tokens"].default
+    assert max_tokens == 16384
+    assert answer_max_tokens == 8192
+    assert answer_max_tokens < max_tokens
 
 
 def test_main_cli_reports_configuration_error(monkeypatch) -> None:
@@ -582,6 +623,82 @@ async def test_llm_client_translates_non_text_content_to_llm_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_llm_client_rejects_empty_content_as_llm_error() -> None:
+    # A reasoning model that spends the whole output cap on chain-of-thought
+    # finishes with finish_reason=length and empty content. Returning "" made
+    # that look like an empty SQL string downstream; it must be a typed,
+    # retryable error that names the cause.
+    def truncated_handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": "", "reasoning_content": "We need answer simple."},
+                    }
+                ]
+            },
+        )
+
+    client = LLMClient(
+        base_url="http://llm/v1",
+        model="deepseek-v4.1-flash",
+        timeout_seconds=5,
+        transport=httpx.MockTransport(truncated_handler),
+    )
+    with pytest.raises(LLMError) as excinfo:
+        await client.generate_sql("q", "meta", "schema")
+    message = str(excinfo.value)
+    assert "empty text content" in message
+    assert "finish_reason='length'" in message
+    assert "reasoning_content present" in message
+    assert "LLM_MAX_TOKENS" in message
+
+
+@pytest.mark.asyncio
+async def test_llm_client_empty_content_without_reasoning_still_fails() -> None:
+    def blank_handler(request):
+        return httpx.Response(
+            200, json={"choices": [{"finish_reason": "stop", "message": {"content": "  "}}]}
+        )
+
+    client = LLMClient(
+        base_url="http://llm/v1",
+        model="gemma",
+        timeout_seconds=5,
+        transport=httpx.MockTransport(blank_handler),
+    )
+    with pytest.raises(LLMError) as excinfo:
+        await client.generate_answer("q", "SELECT 1", "[]")
+    assert "empty text content" in str(excinfo.value)
+    assert "reasoning_content present" not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_llm_client_sends_configured_reasoning_effort(
+    monkeypatch, _reset_settings_cache
+) -> None:
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "high")
+    get_settings.cache_clear()
+    seen: dict[str, dict] = {}
+
+    def recorder(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    client = LLMClient(
+        base_url="http://llm/v1",
+        model="deepseek-v4.1-flash",
+        timeout_seconds=5,
+        transport=httpx.MockTransport(recorder),
+    )
+    assert client.reasoning_effort == "high"
+    await client.generate_sql("q", "meta", "schema")
+    assert seen["payload"]["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
 async def test_llm_client_appends_prior_error_to_prompt() -> None:
     """On retry the real client feeds the previous attempt's error back to the model."""
     seen: dict[str, dict] = {}
@@ -749,3 +866,114 @@ def test_tracer_flushes_created_handler(monkeypatch) -> None:
     tracer.callbacks()
     tracer.flush()
     assert flushed == [True]
+
+
+# ---------------------------------------------------------------------------
+# Progress events: event shape, emitter sequencing, fail-open delivery (M8)
+# ---------------------------------------------------------------------------
+
+
+def test_progress_event_as_dict_keeps_set_fields_only() -> None:
+    event = ProgressEvent(
+        type=ProgressEventType.SQL_EXECUTED, seq=3, attempt=1, sql="SELECT 1", row_count=0
+    )
+    assert event.as_dict() == {
+        "type": "sql.executed",
+        "seq": 3,
+        "attempt": 1,
+        "sql": "SELECT 1",
+        "row_count": 0,
+    }
+    # Unset (None) fields are omitted, not serialised as nulls.
+    assert "answer" not in event.as_dict()
+
+
+def test_progress_emitter_assigns_monotonic_sequence_numbers() -> None:
+    recorded: list[ProgressEvent] = []
+
+    class Sink:
+        def emit(self, event: ProgressEvent) -> None:
+            recorded.append(event)
+
+    emitter = ProgressEmitter(Sink())
+    assert emitter.enabled is True
+    emitter.emit(ProgressEventType.RUN_STARTED, question="Q")
+    emitter.emit(ProgressEventType.RUN_COMPLETED, status="completed", answer="a")
+
+    assert [event.seq for event in recorded] == [1, 2]
+    assert [event.type for event in recorded] == ["run.started", "run.completed"]
+    assert emitter.seq == 2
+
+
+def test_progress_emitter_without_a_sink_costs_nothing() -> None:
+    emitter = ProgressEmitter()
+    assert emitter.enabled is False
+    assert emitter.emit(ProgressEventType.RUN_STARTED, question="Q") is None
+    assert emitter.seq == 0
+
+
+def test_progress_emitter_rejects_a_malformed_event_with_or_without_a_sink() -> None:
+    """A malformed event is a producer bug, not something a sink decides.
+
+    The event is constructed before the sink is consulted, so an unknown field
+    fails identically in a run with no sink and in a run with one — otherwise
+    the bug would only appear the day someone attaches a consumer.
+    """
+
+    class Sink:
+        def emit(self, event: ProgressEvent) -> None:
+            pass
+
+    with pytest.raises(TypeError):
+        ProgressEmitter().emit(ProgressEventType.RUN_STARTED, not_a_field="x")
+    with pytest.raises(TypeError):
+        ProgressEmitter(Sink()).emit(ProgressEventType.RUN_STARTED, not_a_field="x")
+
+
+def test_progress_emitter_swallows_sink_errors_and_keeps_numbering() -> None:
+    """Fail-open (R10): a raising sink is swallowed; sequencing stays consistent."""
+
+    class BoomSink:
+        def emit(self, event: ProgressEvent) -> None:
+            raise RuntimeError("sink exploded")
+
+    emitter = ProgressEmitter(BoomSink())
+    assert emitter.emit(ProgressEventType.RUN_STARTED) is not None
+    assert emitter.emit(ProgressEventType.METADATA_RETRIEVED) is not None
+    assert emitter.seq == 2
+
+
+def test_null_sink_discards_events() -> None:
+    assert NullSink().emit(ProgressEvent(type="run.started", seq=1)) is None
+
+
+@pytest.mark.asyncio
+async def test_run_agent_with_raising_sink_matches_no_sink(monkeypatch) -> None:
+    """R10 at the public seam: status, answer and error are unaffected."""
+
+    class FailingQuery:
+        async def call_tool(self, name, args=None):  # type: ignore[no-untyped-def]
+            if name == "query":
+                return {"valid": False, "message": "Query failed: bad column", "entries": []}
+            return {"valid": True, "message": "ok", "entries": []}
+
+        async def close(self):  # type: ignore[no-untyped-def]
+            pass
+
+    class BoomSink:
+        def emit(self, event: ProgressEvent) -> None:
+            raise RuntimeError("sink exploded")
+
+    monkeypatch.setattr(entrypoint, "create_llm", FakeLLM)
+    monkeypatch.setattr(entrypoint, "MCPCapabilities", FailingQuery)
+    plain = await entrypoint.run_agent("Q")
+    guarded = await entrypoint.run_agent("Q", sink=BoomSink())
+
+    assert (guarded.status, guarded.answer, guarded.error) == (
+        plain.status,
+        plain.answer,
+        plain.error,
+    )
+    assert plain.status == "failed"
+    assert plain.answer is None
+    assert "bad column" in (plain.error or "")

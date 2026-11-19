@@ -1,0 +1,31 @@
+# Management-level evaluation scenarios (M7.6).
+#
+# Structural grading only: there is no reference SQL because a manager run
+# decomposes, executes and synthesizes freely. A case passes when the run
+# completes with a report, its decomposition stays within the D009 budgets
+# (1-4 sub-questions, 0-2 follow-ups), every sub-analysis is grounded, and
+# the report survives the deterministic groundedness check.
+- id: manager-001
+  request: "Analyze recent sales performance and identify areas that deserve management attention."
+  difficulty: hard
+  category: management
+- id: manager-002
+  request: "What are the top 5 product categories by revenue and how do their review scores and delivery times compare?"
+  difficulty: medium
+  category: management
+- id: manager-003
+  request: "Compare sales performance between the first half and second half of 2018 and recommend actions."
+  difficulty: hard
+  category: management
+- id: manager-004
+  request: "Which sellers pose delivery and review-score risk and should be reviewed by management?"
+  difficulty: medium
+  category: management
+- id: manager-005
+  request: "Which customer states have the worst cancellation and delivery performance?"
+  difficulty: medium
+  category: management
+- id: manager-006
+  request: "How does delivery time relate to review scores, and what should management do to improve outcomes?"
+  difficulty: hard
+  category: management

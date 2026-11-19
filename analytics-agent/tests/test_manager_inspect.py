@@ -26,7 +26,14 @@ from app.manager.inspect import (
 from app.manager.llm import FakeManagerLLM, ManagerLLMClient
 from app.manager.state import ManagerStatus
 from app.manager.synthesize import format_evidence
-from tests.test_manager_graph import StubAnalyst, _failed_sub_state, _ok_sub_state, _services
+from tests.test_manager_graph import (
+    CountingAnalyst,
+    StubAnalyst,
+    _counter,
+    _failed_sub_state,
+    _ok_sub_state,
+    _services,
+)
 
 # ---------------------------------------------------------------------------
 # Inspect output parsing
@@ -217,6 +224,35 @@ async def test_follow_up_round_runs_one_bounded_round_before_synthesis() -> None
     assert state["evidence"][0].is_follow_up is False
     # The follow-up evidence flows into the synthesis grounding text.
     assert "Follow-up question 1: What share does the top seller hold?" in llm.report_calls[0][1]
+
+
+async def test_follow_up_records_are_attributed_separately() -> None:
+    counter = _counter()
+    analyst = CountingAnalyst(
+        {
+            "Revenue by category?": _ok_sub_state(),
+            "What drove the drop?": _ok_sub_state(),
+        },
+        counter,
+        {
+            "Revenue by category?": [{"query": 2, "list_tables": 1}],
+            "What drove the drop?": [{"query": 1, "get_sample_rows": 2}],
+        },
+    )
+    llm = FakeManagerLLM(
+        raw="Revenue by category?", follow_up_raw="What drove the drop?", report="ok"
+    )
+    state = await _invoke(_services(llm, analyst, capabilities=counter))
+
+    initial, follow_up = state["evidence"]
+    assert follow_up.is_follow_up is True
+    # Each record owns its own run's cost — the follow-up is not folded into
+    # the sub-analysis it followed up on, nor vice versa.
+    assert initial.tool_calls == {"query": 2, "list_tables": 1}
+    assert follow_up.tool_calls == {"query": 1, "get_sample_rows": 2}
+    assert sum(sum(r.tool_calls.values()) for r in state["evidence"]) == sum(
+        counter.snapshot().values()
+    )
 
 
 async def test_report_grounded_in_follow_up_evidence_passes() -> None:
@@ -458,7 +494,7 @@ async def test_write_artifacts_include_follow_up_fields(tmp_path) -> None:
             ),
         ],
     }
-    entrypoint._write_artifacts(tmp_path, "Summarize sales.", state)
+    entrypoint._write_artifacts(tmp_path, "Summarize sales.", state, {"query": 1})
 
     payload = json.loads((tmp_path / "evidence.json").read_text(encoding="utf-8"))
     assert payload["follow_up_questions"] == ["F1?"]
