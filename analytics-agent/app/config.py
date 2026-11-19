@@ -103,20 +103,35 @@ class Settings(BaseSettings):
     # Secret: read from the environment/.env only; never logged or echoed in
     # error messages. Required iff llm_provider is "opencode".
     opencode_api_key: str | None = Field(default=None, validation_alias="OPENCODE_API_KEY")
-    # OpenCode model id (e.g. "kimi-k2.6", "glm-5.3", "deepseek-v4-flash").
-    opencode_model: str = Field(default="kimi-k2.6", validation_alias="OPENCODE_MODEL")
+    # OpenCode model id. This key's catalogue reports reasoning effort levels
+    # per model (GET $OPENCODE_BASE_URL/models); the previous default
+    # "kimi-k2.6" is deprecated upstream (HTTP 410 on this gateway), and
+    # deepseek-v4.1-flash supports low/high/max effort.
+    opencode_model: str = Field(default="deepseek-v4.1-flash", validation_alias="OPENCODE_MODEL")
     llm_timeout_seconds: float = Field(default=300.0, validation_alias="LLM_TIMEOUT_SECONDS", gt=0)
     # Cap per-generation output tokens. This matters on servers started with
-    # --reasoning on, where the model spends tokens on chain-of-thought before
-    # emitting the final SQL/answer; without a cap the reasoning phase can crowd
-    # out the final output and yield empty/truncated text.
-    llm_max_tokens: int | None = Field(default=4096, validation_alias="LLM_MAX_TOKENS", ge=1)
+    # --reasoning on and on hosted reasoning models (LLM_REASONING_EFFORT),
+    # where the model spends tokens on chain-of-thought before emitting the
+    # final SQL/answer; a cap that the reasoning phase exhausts yields
+    # empty/truncated text. Sized so a high-effort reasoning pass plus the
+    # actual SQL cannot meet the ceiling; providers bill only the tokens
+    # actually generated, so a large cap costs nothing when unused.
+    llm_max_tokens: int | None = Field(default=16384, validation_alias="LLM_MAX_TOKENS", ge=1)
     # Separate, tighter cap for the final answer step. The SQL step may need
     # room for chain-of-thought; the answer step only needs a concise
-    # evidence-based summary, and a small cap bounds the worst-case wall time
-    # on slow local models.
+    # evidence-based summary. Still sized above a high-effort reasoning pass
+    # (~0.5-2K tokens observed) so the prose cannot be truncated away.
     llm_answer_max_tokens: int | None = Field(
-        default=512, validation_alias="LLM_ANSWER_MAX_TOKENS", ge=1
+        default=8192, validation_alias="LLM_ANSWER_MAX_TOKENS", ge=1
+    )
+    # Optional reasoning/thinking effort for OpenAI-compatible reasoning models
+    # (DeepSeek/GLM/Qwen families on hosted gateways). Unset (the default) sends
+    # no parameter at all, so the unauthenticated local llama.cpp path keeps its
+    # exact previous request shape. Reasoning tokens are billed against the caps
+    # above, so a reasoning model needs larger LLM_MAX_TOKENS /
+    # LLM_ANSWER_MAX_TOKENS than a plain chat model.
+    llm_reasoning_effort: Literal["low", "medium", "high", "max"] | None = Field(
+        default=None, validation_alias="LLM_REASONING_EFFORT"
     )
     # Maximum regeneration attempts before the agent fails out (no infinite
     # loops when SQL stays invalid or errors).

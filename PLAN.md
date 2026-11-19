@@ -1086,6 +1086,17 @@ configurations coexist in ``.env``. Trade-off accepted for development: with
 third-party SaaS (analogous to D005's Langfuse Cloud tradeoff); switching back
 to the fully local path is a one-line env change.
 
+Second amendment (hosted reasoning models): ``LLM_REASONING_EFFORT``
+(``low``/``medium``/``high``/``max``, unset by default) adds the OpenAI-compatible
+``reasoning_effort`` field to every call; unset keeps the local request shape
+unchanged. Reasoning tokens are billed against ``LLM_MAX_TOKENS`` /
+``LLM_ANSWER_MAX_TOKENS``, so ``high`` needs headroom above the thinking
+budget: a 512-token answer cap truncates a high-effort call to an empty
+completion, so the defaults are now 16384 (generation) and 8192 (answer). An
+empty completion raises a typed ``LLMError`` naming the truncation instead of
+returning ``""``. The ``opencode`` model default moved from the upstream-
+deprecated ``kimi-k2.6`` to ``deepseek-v4.1-flash``.
+
 ### D008 — Agent Tool Surface (M4)
 
 Decision: no agent-as-MCP tool in M4; expose the agent via CLI + ``run()`` only.
@@ -1200,6 +1211,8 @@ Completed:
   * M8.8 — Bounded concurrency with an explicit `queued` frame; slots released on success, failure, raise and disconnect.
   * M8.9 — Measurements recorded above, D009 amended, READMEs updated.
   * Two adversarial review rounds folded in (see the M8 section).
+* [x] **Live validation with a hosted reasoning model** (closes the manual steps M4/M6/M7 left open) — `LLM_PROVIDER=opencode`, `OPENCODE_MODEL=deepseek-v4.1-flash`, `LLM_REASONING_EFFORT=high`: all 30 analyst cases executed, 24 passed (80%; easy 10/10, medium 10/12, hard 4/8), 0 retries, ~10 s/case, all 6 failures genuine result-set mismatches (no harness errors); one management request completed end-to-end with a grounded report and a single bounded follow-up round (~13 min). Langfuse export remains unverified (keys unset, tracer fail-open).
+  Follow-up measured with the token caps raised to 32768/16384 (`LLM_REASONING_EFFORT=high`): analyst benchmark 23/30, **0 truncation failures** (the old 512-token answer cap had killed two hard cases outright; one answer step legitimately generated 10550 tokens), 0 retries, 11 s/case. Remaining failures are query-semantics and type-strictness mismatches (`ELSE 0` vs `NULL`, `DISTINCT` key, month string vs date, column count), not limits. The M7.6 manager benchmark then ran **6/6 passed**, 0 retries, avg 398 s/scenario: every scenario produced a structurally valid decomposition (3-4 sub-questions), 0 sub-analysis errors, 0 follow-up errors, and a grounded report (5 of 6 also triggered the bounded follow-up round, e.g. re-checking the Sep-Oct 2018 data cut-off before concluding a decline).
 
 Next:
 

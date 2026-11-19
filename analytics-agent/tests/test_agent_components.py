@@ -289,6 +289,18 @@ def test_request_payload_shape() -> None:
     assert opts == {"timeout": 1.0}
 
 
+def test_request_payload_omits_reasoning_effort_when_unset() -> None:
+    payload, _ = _request_payload("m", "sys", "usr", timeout=1.0)
+    # The local llama.cpp path is configured with --reasoning on instead, so an
+    # unconfigured effort must not add any parameter to the request.
+    assert "reasoning_effort" not in payload
+
+
+def test_request_payload_includes_reasoning_effort_when_set() -> None:
+    payload, _ = _request_payload("m", "sys", "usr", timeout=1.0, reasoning_effort="high")
+    assert payload["reasoning_effort"] == "high"
+
+
 # ---------------------------------------------------------------------------
 # LLM provider selection (llamacpp default / openrouter)
 # ---------------------------------------------------------------------------
@@ -338,6 +350,26 @@ def test_settings_reject_unknown_provider(monkeypatch, _reset_settings_cache) ->
     monkeypatch.setenv("LLM_PROVIDER", "ollama-cloud")
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_settings_reject_unknown_reasoning_effort(monkeypatch, _reset_settings_cache) -> None:
+    # Models advertise a discrete effort list (deepseek-v4.1-flash: low/high/max),
+    # so an unsupported level must fail at startup rather than 400 mid-run.
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "medium-high")
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_default_token_caps_leave_room_for_a_reasoning_pass() -> None:
+    # Reasoning tokens are billed against the caps, so a default sized for a
+    # plain chat model truncates a high-effort pass to an empty completion.
+    # Assert the declared defaults (not a resolved Settings instance) so a
+    # developer's project .env cannot mask a regression in the defaults.
+    max_tokens = Settings.model_fields["llm_max_tokens"].default
+    answer_max_tokens = Settings.model_fields["llm_answer_max_tokens"].default
+    assert max_tokens == 16384
+    assert answer_max_tokens == 8192
+    assert answer_max_tokens < max_tokens
 
 
 def test_main_cli_reports_configuration_error(monkeypatch) -> None:
@@ -588,6 +620,82 @@ async def test_llm_client_translates_non_text_content_to_llm_error() -> None:
     with pytest.raises(LLMError) as excinfo:
         await client.generate_sql("q", "meta", "schema")
     assert "no usable text content" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_llm_client_rejects_empty_content_as_llm_error() -> None:
+    # A reasoning model that spends the whole output cap on chain-of-thought
+    # finishes with finish_reason=length and empty content. Returning "" made
+    # that look like an empty SQL string downstream; it must be a typed,
+    # retryable error that names the cause.
+    def truncated_handler(request):
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"content": "", "reasoning_content": "We need answer simple."},
+                    }
+                ]
+            },
+        )
+
+    client = LLMClient(
+        base_url="http://llm/v1",
+        model="deepseek-v4.1-flash",
+        timeout_seconds=5,
+        transport=httpx.MockTransport(truncated_handler),
+    )
+    with pytest.raises(LLMError) as excinfo:
+        await client.generate_sql("q", "meta", "schema")
+    message = str(excinfo.value)
+    assert "empty text content" in message
+    assert "finish_reason='length'" in message
+    assert "reasoning_content present" in message
+    assert "LLM_MAX_TOKENS" in message
+
+
+@pytest.mark.asyncio
+async def test_llm_client_empty_content_without_reasoning_still_fails() -> None:
+    def blank_handler(request):
+        return httpx.Response(
+            200, json={"choices": [{"finish_reason": "stop", "message": {"content": "  "}}]}
+        )
+
+    client = LLMClient(
+        base_url="http://llm/v1",
+        model="gemma",
+        timeout_seconds=5,
+        transport=httpx.MockTransport(blank_handler),
+    )
+    with pytest.raises(LLMError) as excinfo:
+        await client.generate_answer("q", "SELECT 1", "[]")
+    assert "empty text content" in str(excinfo.value)
+    assert "reasoning_content present" not in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_llm_client_sends_configured_reasoning_effort(
+    monkeypatch, _reset_settings_cache
+) -> None:
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "high")
+    get_settings.cache_clear()
+    seen: dict[str, dict] = {}
+
+    def recorder(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+
+    client = LLMClient(
+        base_url="http://llm/v1",
+        model="deepseek-v4.1-flash",
+        timeout_seconds=5,
+        transport=httpx.MockTransport(recorder),
+    )
+    assert client.reasoning_effort == "high"
+    await client.generate_sql("q", "meta", "schema")
+    assert seen["payload"]["reasoning_effort"] == "high"
 
 
 @pytest.mark.asyncio
