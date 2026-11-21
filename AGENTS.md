@@ -198,6 +198,12 @@ uv run pytest
 
 Run relevant tests during development and the full test suite before considering a milestone complete.
 
+Validate the rule table:
+
+```bash
+node tools/rule-table.mjs check AGENTS.md
+```
+
 ## Git
 
 Use git for version control.
@@ -226,3 +232,9 @@ For implementation tasks, report:
 * any remaining concerns
 
 When beginning a new milestone, first verify the current repository state against `PLAN.md`.
+
+## Rules and enforcement
+
+| Rule | Level | Enforced by | Proof |
+|---|---|---|---|
+| Groundedness extraction treats period labels and evidence string cells as non-measurements | test | `cd analytics-agent && uv run pytest tests/test_manager_groundedness_labels.py -q` | `docs/proof/groundedness-labels.md` |
