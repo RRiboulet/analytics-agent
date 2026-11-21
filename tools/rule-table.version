@@ -1,0 +1,5 @@
+checker: rule-table
+contract-version: 1
+source: RRiboulet/my-agent-setup .pi/skills/prevent-recurrence/scripts/rule-table.mjs (exp/prevent-recurrence)
+vendored: 2026-11-21
+sha256: 9ab0994ddab7d256f654791fb6d89a8f315d577b092ceae83a82887d90645822
